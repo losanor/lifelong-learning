@@ -1,0 +1,105 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: #1a1a1a;
+  background: #f5f5f5;
+  margin: 0;
+  padding: 0;
+}
+
+.storage-warning {
+  background: #fff3cd;
+  color: #664d03;
+  border-bottom: 2px solid #ffca2c;
+  padding: 10px 16px;
+  font-size: 14px;
+  text-align: center;
+}
+
+main {
+  max-width: 600px;
+  margin: 32px auto;
+  padding: 0 16px;
+}
+
+h1 {
+  font-size: 24px;
+  margin: 0 0 24px 0;
+}
+
+.entrada-tarefa {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+#task-input {
+  flex: 1;
+  padding: 8px 12px;
+  font-size: 16px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  min-width: 0;
+}
+
+#task-input:focus {
+  outline: 2px solid #0066cc;
+  border-color: transparent;
+}
+
+#add-button {
+  padding: 8px 16px;
+  font-size: 16px;
+  background: #0066cc;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#add-button:hover {
+  background: #0052a3;
+}
+
+#task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.item-tarefa {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.item-tarefa input[type="checkbox"] {
+  margin-top: 3px;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.texto-tarefa {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.item-tarefa.concluida .texto-tarefa {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+
+.empty-state {
+  color: #666;
+  margin: 0;
+}

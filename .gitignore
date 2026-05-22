@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+
+# Runtime traces and generated run captures.
+data/cycle_reports.md
+data/handoff_log.md
+data/human_escalations.md
+data/route_events.md
+data/run_registry.md
+data/run_output*.md
+
