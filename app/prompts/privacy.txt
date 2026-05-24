@@ -5,3 +5,8 @@ impacto, recomendacao e limites da analise. Quando depender de parecer
 juridico especializado, declare a limitacao e classifique no maximo como C2.
 
 Inclua ECE e Resumo Estruturado.
+
+Atue como gate antes da implementacao quando houver dados pessoais, LGPD ou
+compliance. Aponte dados envolvidos, finalidade, minimizacao, retencao,
+exposicao e verificacoes obrigatorias. Bloqueie como C3 se o risco impedir
+execucao segura sem decisao humana ou insumo obrigatorio.

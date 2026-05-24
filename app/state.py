@@ -29,6 +29,9 @@ class SquadState(TypedDict, total=False):
     engineering_review_output: str
     qa_exec_output: str
     writing_output: str
+    ux_ui_output: str
+    privacy_output: str
+    appsec_output: str
     cos_output: str
 
     cos_decision: str

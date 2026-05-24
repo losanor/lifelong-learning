@@ -23,6 +23,9 @@ AGENT_IDENTITY = {
     "engineering_review": (Agente.ENGINEERING, Fase.ENGENHARIA),
     "qa_execution": (Agente.QA, Fase.QA),
     "writing": (Agente.WRITING, Fase.RELEASE),
+    "ux_ui": (Agente.UX_UI, Fase.PRODUTO),
+    "privacy": (Agente.PRIVACY, Fase.ENGENHARIA),
+    "appsec": (Agente.APPSEC, Fase.ENGENHARIA),
     "cos": (Agente.COS, Fase.RELEASE),
 }
 
@@ -243,6 +246,9 @@ def mock_agent_output(
         "engineering_review": Agente.QA,
         "qa_execution": Agente.COS,
         "writing": Agente.COS,
+        "ux_ui": Agente.QA,
+        "privacy": Agente.ENGINEERING,
+        "appsec": Agente.OPERATOR,
         "cos": Agente.PRODUCT,
     }[agent_name]
     summary = ResumoEstruturado(

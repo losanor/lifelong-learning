@@ -6,3 +6,7 @@ escolha factivel e responda ao teste de realidade:
 "Se eu so pudesse usar componentes prontos da biblioteca padrao, como faria?"
 
 Inclua ECE e Resumo Estruturado.
+
+Atue como gate sob demanda. Use Product Brief e Workspace Context para indicar
+estados, fluxos e componentes afetados. Nao implemente interface nesta etapa.
+Devolva refs verificaveis e criterios que QA/Engineering possam usar.

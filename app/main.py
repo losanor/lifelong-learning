@@ -7,6 +7,8 @@ from app.retry_policy import initialize_retry_state
 from app.run_registry import generate_run_id, append_run_start, append_run_end
 from app.observability import build_run_config
 from app.operational_store import metrics_snapshot, record_run
+from app.intake import decide_intake
+from app.workspace_context import capture_workspace_context
 
 import sys
 from time import perf_counter
@@ -56,6 +58,8 @@ Ressalva opcional:
     handoff_log = read_handoff_log()
     compact_memory = read_compact_memory()
     context_bundle = build_context_bundle(mode="normal")
+    preflight_intake = decide_intake(user_goal)
+    preflight_workspace = capture_workspace_context(".")
 
     started_at = perf_counter()
     result = graph.invoke({
@@ -79,7 +83,12 @@ Ressalva opcional:
         "structured_outputs": {},
         "raw_model_outputs": {},
         "escalations": []
-    }, config=build_run_config(run_id=run_id))
+    }, config=build_run_config(
+        run_id=run_id,
+        active_flow=preflight_intake.active_flow,
+        on_demand_agents=preflight_intake.on_demand_agents,
+        git_repo=preflight_workspace.git_repo,
+    ))
     duration_ms = round((perf_counter() - started_at) * 1000)
 
     append_run_end(
@@ -116,6 +125,15 @@ Ressalva opcional:
 
     print("\n=== ENGINEERING ===\n")
     print(result.get("engineering_output", ""))
+
+    print("\n=== UX/UI GATE ===\n")
+    print(result.get("ux_ui_output", ""))
+
+    print("\n=== PRIVACY GATE ===\n")
+    print(result.get("privacy_output", ""))
+
+    print("\n=== APPSEC GATE ===\n")
+    print(result.get("appsec_output", ""))
 
     print("\n=== IMPLEMENTATION OPERATOR ===\n")
     print(result.get("operator_output", ""))

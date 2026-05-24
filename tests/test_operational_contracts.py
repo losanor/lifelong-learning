@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 from app.evals import EvalScenario, assess_scenario
+from app.observability import build_run_config
 from app.operational_store import metrics_snapshot, record_run
 from app.orchestrator import inspect_agent_output, update_orchestrator_checks
 from app.retry_policy import initialize_retry_state, resolve_retry_permission
@@ -191,6 +192,35 @@ class OperationalContractsTest(unittest.TestCase):
             decide_intake("Criar MVP com benchmark de concorrentes.").active_flow,
             "delivery_with_discovery",
         )
+
+    def test_intake_signals_specialist_gates_for_sensitive_interface(self):
+        decision = decide_intake(
+            "Criar interface de cadastro de paciente com dados pessoais, login e autenticacao."
+        )
+
+        self.assertEqual(decision.active_flow, "delivery_core")
+        self.assertIn("ux_ui", decision.on_demand_agents)
+        self.assertIn("privacy", decision.on_demand_agents)
+        self.assertIn("appsec", decision.on_demand_agents)
+
+    def test_langsmith_config_tags_specialist_gates(self):
+        config = build_run_config(
+            run_id="run_observe",
+            active_flow="delivery_core",
+            on_demand_agents=("privacy", "appsec"),
+            git_repo=True,
+        )
+
+        self.assertIn("gate:privacy", config["tags"])
+        self.assertIn("gate:appsec", config["tags"])
+        self.assertEqual(config["metadata"]["gate_count"], 2)
+        self.assertTrue(config["metadata"]["git_repo"])
+
+    def test_review_intake_signals_appsec_without_delivery_flow(self):
+        decision = decide_intake("Fazer code review de autenticacao e permissoes do login.")
+
+        self.assertEqual(decision.active_flow, "review")
+        self.assertIn("appsec", decision.on_demand_agents)
 
 
 if __name__ == "__main__":

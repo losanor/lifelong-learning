@@ -42,6 +42,15 @@ class MockModel:
         if "[[agent:writing]]" in prompt_lower:
             return MockResponse(mock_agent_output("writing", mock_writing(), ece=ECE.C1))
 
+        if "[[agent:ux_ui]]" in prompt_lower:
+            return MockResponse(mock_agent_output("ux_ui", mock_ux_ui(), ece=ECE.C1))
+
+        if "[[agent:privacy]]" in prompt_lower:
+            return MockResponse(mock_agent_output("privacy", mock_privacy(), ece=ECE.C2))
+
+        if "[[agent:appsec]]" in prompt_lower:
+            return MockResponse(mock_agent_output("appsec", mock_appsec(), ece=ECE.C2))
+
         if "[[agent:cos]]" in prompt_lower:
             return MockResponse(
                 mock_agent_output(
@@ -291,6 +300,42 @@ Organizar a documentacao solicitada sem alterar escopo.
 3. Proximo passo e dono: CoS revisar destino do documento.
 4. Necessidade de escalar para CoS: nao.
 5. ECE: C1.
+"""
+
+
+def mock_ux_ui() -> str:
+    return """
+# UX/UI Gate - MOCK
+
+## Parecer
+Fluxo principal revisado e factivel com componentes simples.
+
+## Proximo Passo
+QA Planning deve transformar estados e interacoes em criterios verificaveis.
+"""
+
+
+def mock_privacy() -> str:
+    return """
+# Privacy Gate - MOCK
+
+## Parecer
+Uso de dados revisado em nivel de especificacao; seguir com minimizacao e sem exposicao indevida.
+
+## Limitacao
+Analise C2 por nao substituir parecer juridico nem inspeção de ambiente real.
+"""
+
+
+def mock_appsec() -> str:
+    return """
+# AppSec Gate - MOCK
+
+## Parecer
+Superficie de autenticacao e permissoes revisada em nivel de especificacao.
+
+## Limitacao
+Analise C2 ate existir codigo/configuracao real para verificacao tecnica.
 """
 
 

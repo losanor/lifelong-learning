@@ -17,6 +17,9 @@ AGENT_META = {
     "engineering_review": (Agente.ENGINEERING, Fase.ENGENHARIA),
     "qa_execution": (Agente.QA, Fase.QA),
     "writing": (Agente.WRITING, Fase.RELEASE),
+    "ux_ui": (Agente.UX_UI, Fase.PRODUTO),
+    "privacy": (Agente.PRIVACY, Fase.ENGENHARIA),
+    "appsec": (Agente.APPSEC, Fase.ENGENHARIA),
     "cos": (Agente.COS, Fase.RELEASE),
 }
 

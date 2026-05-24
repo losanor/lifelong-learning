@@ -99,6 +99,9 @@ def get_agent_context_mode(agent_name: str) -> str:
         "operator": "normal",
         "qa_execution": "decision_critical",
         "writing": "normal",
+        "ux_ui": "normal",
+        "privacy": "decision_critical",
+        "appsec": "decision_critical",
         # CoS opera no caminho quente com memoria compacta + decisoes.
         # full_context fica reservado para auditoria/debug para evitar logs
         # crescentes no prompt normal.

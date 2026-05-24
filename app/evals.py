@@ -13,6 +13,7 @@ from app.observability import build_run_config
 from app.operational_store import DEFAULT_DB_PATH, metrics_snapshot, record_eval_result, record_run
 from app.retry_policy import initialize_retry_state
 from app.run_registry import generate_run_id
+from app.intake import decide_intake
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,20 @@ SCENARIOS = (
         "Criar MVP com benchmark de concorrentes para validar posicionamento.",
         "delivery_with_discovery",
         ("discovery", "product", "qa_planning", "engineering", "operator", "engineering_review", "qa_execution", "cos"),
+    ),
+    EvalScenario(
+        "sensitive_authenticated_ui",
+        "Criar interface de cadastro de paciente com dados pessoais, login e autenticacao.",
+        "delivery_core",
+        ("product", "ux_ui", "qa_planning", "engineering", "privacy", "appsec", "operator", "engineering_review", "qa_execution", "cos"),
+        ("discovery",),
+    ),
+    EvalScenario(
+        "security_code_review",
+        "Fazer code review de autenticacao e permissoes do login.",
+        "review",
+        ("engineering_review", "appsec", "cos"),
+        ("operator", "qa_execution", "product"),
     ),
 )
 
@@ -153,10 +168,16 @@ def run_evaluation(
 
     for scenario in SCENARIOS:
         run_id = generate_run_id()
+        preflight = decide_intake(scenario.user_goal)
         started_at = perf_counter()
         result = graph.invoke(
             _initial_state(scenario, run_id, workspace_root),
-            config=build_run_config(run_id=run_id, active_flow=scenario.expected_flow, mode="eval"),
+            config=build_run_config(
+                run_id=run_id,
+                active_flow=scenario.expected_flow,
+                mode="eval",
+                on_demand_agents=preflight.on_demand_agents,
+            ),
         )
         duration_ms = round((perf_counter() - started_at) * 1000)
         score, findings = assess_scenario(scenario, result)

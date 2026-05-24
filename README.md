@@ -23,6 +23,15 @@ Fluxos adaptativos do intake:
 - `decision_only`: Product -> CoS.
 - `research_only`: Discovery -> CoS.
 
+Gates sob demanda:
+
+- `UX/UI`: entra entre Product e QA Planning quando a entrega envolve
+  interface, tela, formulario ou jornada.
+- `Privacy`: entra antes do Operator quando houver LGPD, dados pessoais,
+  paciente ou compliance; em review tecnico, entra antes do CoS.
+- `AppSec`: entra antes do Operator quando houver autenticacao, login,
+  permissoes ou seguranca; em review tecnico, entra antes do CoS.
+
 Camadas compartilhadas:
 
 - `contracts.py`: CMO, Resumo Estruturado, Shared Memory e ECE.
@@ -39,7 +48,8 @@ Camadas compartilhadas:
 O fluxo padrao mantem especialistas sob demanda fora do caminho quente. UX/UI,
 Privacy, AppSec, Writing e Data Scientist entram quando seus gatilhos existem.
 O intake registra esses sinais em `on_demand_agents`; Discovery ja e roteado no
-grafo por esse mecanismo.
+grafo por esse mecanismo. UX/UI, Privacy e AppSec agora tambem executam como
+gates reais apenas quando seus gatilhos forem detectados.
 
 ## Execucao local
 
@@ -72,7 +82,8 @@ resultados dos evals.
 LangSmith e o caminho recomendado para tracing e avaliacao do grafo. Copie os
 campos de `.env.example` para `.env`, defina `LANGSMITH_TRACING=true`,
 `LANGSMITH_API_KEY` e `LANGSMITH_PROJECT`. O runtime injeta `run_id`, fluxo
-ativo e tags em cada execucao via `app/observability.py`.
+ativo, estado Git e tags `gate:<agente>` em cada execucao via
+`app/observability.py`.
 
 Use Markdown/logs locais como trilha operacional simples e LangSmith para
 traces, comparacao de execucoes, monitoramento e evals. Depois de medir volume,
@@ -103,8 +114,9 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
   para auditoria e debug.
 - O SQLite registra runs e artefatos estruturados sem depender de parsing de
   logs Markdown.
-- Os evals cobrem feature, bugfix, documentacao, review, decisao, research e
-  entrega com Discovery; a meta minima de aceite e nota `8.7`.
+- Os evals cobrem feature, bugfix, documentacao, review, decisao, research,
+  entrega com Discovery, entrega sensivel e review de seguranca; a meta minima
+  de aceite e nota `8.7`.
 - A camada contratual Pydantic cobre CMO estruturado, Shared Memory,
   observabilidade de handoffs e metricas de saude.
 
@@ -121,3 +133,9 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
   latencia de rede, tamanho de contexto e volume dos logs compactados.
 - A bateria inicial usa o mock para medir arquitetura e contratos; a proxima
   baseline deve rodar com modelo real e custos/latencias observados no LangSmith.
+
+Referencias oficiais para operar LangSmith:
+
+- Metadata e tags: https://docs.langchain.com/langsmith/add-metadata-tags
+- Avaliacao de grafos: https://docs.langchain.com/langsmith/evaluate-graph
+- Sampling de traces: https://docs.langchain.com/langsmith/sample-traces

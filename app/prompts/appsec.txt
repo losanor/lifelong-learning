@@ -5,3 +5,8 @@ vulnerabilidades conhecidas e mitigacoes. Se revisar apenas especificacao e
 nao codigo real, declare a limitacao e classifique no maximo como C2.
 
 Inclua ECE e Resumo Estruturado.
+
+Atue como gate antes da implementacao quando houver autenticacao, autorizacao,
+permissoes, segredo ou superficie sensivel. Aponte ameacas, controles e
+verificacoes concretas para Engineering Review/QA. Bloqueie como C3 se a
+implementacao nao puder seguir com seguranca.

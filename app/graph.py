@@ -280,6 +280,104 @@ def writing_node(state: SquadState):
     })
 
 
+def ux_ui_node(state: SquadState):
+    prompt = read_prompt("ux_ui.txt")
+    product = state.get("product_output", "")
+    run_id = state.get("run_id", "")
+    response = invoke_validated("ux_ui",
+        f"[[AGENT:UX_UI]]\n\n"
+        f"{prompt}\n\n"
+        f"{cmo_block(state, 'ux_ui', 'Revisar experiencia e estados da entrega.', product, 'Gate UX/UI com criterios verificaveis, ECE e resumo.')}\n\n"
+        f"Objetivo do projeto:\n{state['user_goal']}\n\n"
+        f"{workspace_context_block(state)}"
+        f"Product Brief:\n{product}"
+    )
+    append_handoff(
+        run_id=run_id,
+        from_agent="UX/UI Lead",
+        to_agent="QA Planning",
+        artifact="UX/UI Gate",
+        summary=response.content[:500],
+        ece="C1/C2",
+        blockers="Bloqueios de experiencia devem ser incorporados aos criterios de aceite.",
+        next_step="QA Planning deve cobrir estados e friccoes sinalizadas.",
+        escalate_to_cos="Somente se houver output C3."
+    )
+    return with_orchestrator_check(state, "ux_ui", response, {
+        "ux_ui_output": response.content,
+        "confidence_by_agent": {**state.get("confidence_by_agent", {}), "ux_ui": response.envelope.summary.ece},
+        "summaries_by_agent": {**state.get("summaries_by_agent", {}), "ux_ui": response.content[:300]},
+    })
+
+
+def privacy_node(state: SquadState):
+    prompt = read_prompt("privacy.txt")
+    engineering = state.get("engineering_output", "")
+    engineering_review = state.get("engineering_review_output", "")
+    review_source = engineering or engineering_review or state["user_goal"]
+    run_id = state.get("run_id", "")
+    response = invoke_validated("privacy",
+        f"[[AGENT:PRIVACY]]\n\n"
+        f"{prompt}\n\n"
+        f"{cmo_block(state, 'privacy', 'Revisar riscos de dados no fluxo ativo.', review_source, 'Gate Privacy com riscos, controles, ECE e resumo.')}\n\n"
+        f"Objetivo do projeto:\n{state['user_goal']}\n\n"
+        f"{workspace_context_block(state)}"
+        f"Engineering Specification:\n{engineering}\n\n"
+        f"Engineering Review:\n{engineering_review}"
+    )
+    append_handoff(
+        run_id=run_id,
+        from_agent="Privacy & Compliance",
+        to_agent="AppSec / Implementation Operator",
+        artifact="Privacy Gate",
+        summary=response.content[:500],
+        ece="C1/C2/C3",
+        blockers="Riscos C3 de dados impedem implementacao automatica.",
+        next_step="Continuar somente respeitando controles e limitacoes registradas.",
+        escalate_to_cos="Sim quando C3."
+    )
+    return with_orchestrator_check(state, "privacy", response, {
+        "privacy_output": response.content,
+        "confidence_by_agent": {**state.get("confidence_by_agent", {}), "privacy": response.envelope.summary.ece},
+        "summaries_by_agent": {**state.get("summaries_by_agent", {}), "privacy": response.content[:300]},
+    })
+
+
+def appsec_node(state: SquadState):
+    prompt = read_prompt("appsec.txt")
+    engineering = state.get("engineering_output", "")
+    engineering_review = state.get("engineering_review_output", "")
+    privacy = state.get("privacy_output", "")
+    review_source = engineering or engineering_review or state["user_goal"]
+    run_id = state.get("run_id", "")
+    response = invoke_validated("appsec",
+        f"[[AGENT:APPSEC]]\n\n"
+        f"{prompt}\n\n"
+        f"{cmo_block(state, 'appsec', 'Revisar seguranca no fluxo ativo.', review_source, 'Gate AppSec com ameacas, controles, ECE e resumo.')}\n\n"
+        f"Objetivo do projeto:\n{state['user_goal']}\n\n"
+        f"{workspace_context_block(state)}"
+        f"Engineering Specification:\n{engineering}\n\n"
+        f"Engineering Review:\n{engineering_review}\n\n"
+        f"Privacy Gate:\n{privacy}"
+    )
+    append_handoff(
+        run_id=run_id,
+        from_agent="AppSec / Security",
+        to_agent="Implementation Operator",
+        artifact="AppSec Gate",
+        summary=response.content[:500],
+        ece="C1/C2/C3",
+        blockers="Riscos C3 de seguranca impedem implementacao automatica.",
+        next_step="Operator deve incorporar controles aprovados ao pacote.",
+        escalate_to_cos="Sim quando C3."
+    )
+    return with_orchestrator_check(state, "appsec", response, {
+        "appsec_output": response.content,
+        "confidence_by_agent": {**state.get("confidence_by_agent", {}), "appsec": response.envelope.summary.ece},
+        "summaries_by_agent": {**state.get("summaries_by_agent", {}), "appsec": response.content[:300]},
+    })
+
+
 def product_node(state: SquadState):
     prompt = read_prompt("product.txt")
     discovery = state.get("discovery_output", "")
@@ -332,6 +430,7 @@ def qa_planning_node(state: SquadState):
     prompt = read_prompt("qa.txt")
     product = state.get("product_output", "")
     discovery = state.get("discovery_output", "")
+    ux_ui = state.get("ux_ui_output", "")
     run_id = state.get("run_id", "")
     cmo = cmo_block(
         state,
@@ -348,7 +447,8 @@ def qa_planning_node(state: SquadState):
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
         f"{workspace_context_block(state)}"
         f"Discovery:\n{discovery}\n\n"
-        f"Product Brief:\n{product}"
+        f"Product Brief:\n{product}\n\n"
+        f"UX/UI Gate:\n{ux_ui}"
     )
 
     append_handoff(
@@ -381,6 +481,7 @@ def engineering_node(state: SquadState):
     discovery = state.get("discovery_output", "")
     product = state.get("product_output", "")
     qa_plan = state.get("qa_plan_output", "")
+    ux_ui = state.get("ux_ui_output", "")
     agent_context = format_agent_context("engineering")
     run_id = state.get("run_id", "")
     cmo = cmo_block(
@@ -400,7 +501,8 @@ def engineering_node(state: SquadState):
         f"{agent_context}"
         f"Discovery:\n{discovery}\n\n"
         f"Product Brief:\n{product}\n\n"
-        f"QA Planning:\n{qa_plan}"
+        f"QA Planning:\n{qa_plan}\n\n"
+        f"UX/UI Gate:\n{ux_ui}"
     )
 
     append_handoff(
@@ -433,6 +535,8 @@ def operator_node(state: SquadState):
     engineering = state.get("engineering_output", "")
     qa_plan = state.get("qa_plan_output", "")
     product = state.get("product_output", "")
+    privacy = state.get("privacy_output", "")
+    appsec = state.get("appsec_output", "")
     run_id = state.get("run_id", "")
     cmo = cmo_block(
         state,
@@ -450,7 +554,9 @@ def operator_node(state: SquadState):
         f"{workspace_context_block(state)}"
         f"Product Brief:\n{product}\n\n"
         f"QA Planning:\n{qa_plan}\n\n"
-        f"Engineering Specification:\n{engineering}"
+        f"Engineering Specification:\n{engineering}\n\n"
+        f"Privacy Gate:\n{privacy}\n\n"
+        f"AppSec Gate:\n{appsec}"
     )
 
     append_handoff(
@@ -483,6 +589,8 @@ def engineering_review_node(state: SquadState):
     qa_plan = state.get("qa_plan_output", "")
     engineering = state.get("engineering_output", "")
     operator = state.get("operator_output", "")
+    privacy = state.get("privacy_output", "")
+    appsec = state.get("appsec_output", "")
     run_id = state.get("run_id", "")
     review_input = (
         f"Engineering Specification: {engineering}\nOperator Package: {operator}"
@@ -506,7 +614,9 @@ def engineering_review_node(state: SquadState):
         f"Product Brief:\n{product}\n\n"
         f"QA Planning:\n{qa_plan}\n\n"
         f"Engineering Specification:\n{engineering}\n\n"
-        f"Implementation Operator Package:\n{operator}"
+        f"Implementation Operator Package:\n{operator}\n\n"
+        f"Privacy Gate:\n{privacy}\n\n"
+        f"AppSec Gate:\n{appsec}"
     )
 
     append_handoff(
@@ -540,6 +650,8 @@ def qa_execution_node(state: SquadState):
     engineering = state.get("engineering_output", "")
     operator = state.get("operator_output", "")
     engineering_review = state.get("engineering_review_output", "")
+    privacy = state.get("privacy_output", "")
+    appsec = state.get("appsec_output", "")
     validation = state.get("manual_validation_result", "")
     agent_context = format_agent_context("qa_execution")
     run_id = state.get("run_id", "")
@@ -562,6 +674,8 @@ def qa_execution_node(state: SquadState):
         f"Engineering Specification:\n{engineering}\n\n"
         f"Implementation Operator Package:\n{operator}\n\n"
         f"Engineering Review:\n{engineering_review}\n\n"
+        f"Privacy Gate:\n{privacy}\n\n"
+        f"AppSec Gate:\n{appsec}\n\n"
         f"Resultado da validação manual:\n{validation}"
     )
 
@@ -599,6 +713,9 @@ def cos_node(state: SquadState):
     engineering_review = state.get("engineering_review_output", "")
     qa_exec = state.get("qa_exec_output", "")
     writing = state.get("writing_output", "")
+    ux_ui = state.get("ux_ui_output", "")
+    privacy = state.get("privacy_output", "")
+    appsec = state.get("appsec_output", "")
     validation = state.get("manual_validation_result", "")
     run_id = state.get("run_id", "")
 
@@ -628,6 +745,9 @@ def cos_node(state: SquadState):
         f"Engineering Review:\n{engineering_review}\n\n"
         f"QA Execution Report:\n{qa_exec}\n\n"
         f"Writing Artifact:\n{writing}\n\n"
+        f"UX/UI Gate:\n{ux_ui}\n\n"
+        f"Privacy Gate:\n{privacy}\n\n"
+        f"AppSec Gate:\n{appsec}\n\n"
         f"Checks operacionais do Orchestrator:\n{format_orchestrator_checks(state)}\n\n"
         f"Resultado da validação manual:\n{validation}"
     )
@@ -865,11 +985,43 @@ def route_after_discovery(state: SquadState) -> str:
 def route_after_product(state: SquadState) -> str:
     if state.get("active_flow") == "decision_only":
         return "cos"
+    if "ux_ui" in state.get("on_demand_agents", []):
+        return next_after_check(state, "product", "ux_ui")
     return next_after_check(state, "product", "qa_planning")
+
+
+def route_after_ux_ui(state: SquadState) -> str:
+    return next_after_check(state, "ux_ui", "qa_planning")
+
+
+def route_after_engineering(state: SquadState) -> str:
+    if "privacy" in state.get("on_demand_agents", []):
+        return next_after_check(state, "engineering", "privacy")
+    if "appsec" in state.get("on_demand_agents", []):
+        return next_after_check(state, "engineering", "appsec")
+    return next_after_check(state, "engineering", "operator")
+
+
+def route_after_privacy(state: SquadState) -> str:
+    if "appsec" in state.get("on_demand_agents", []):
+        return next_after_check(state, "privacy", "appsec")
+    if state.get("active_flow") == "review":
+        return next_after_check(state, "privacy", "cos")
+    return next_after_check(state, "privacy", "operator")
+
+
+def route_after_appsec(state: SquadState) -> str:
+    if state.get("active_flow") == "review":
+        return next_after_check(state, "appsec", "cos")
+    return next_after_check(state, "appsec", "operator")
 
 
 def route_after_engineering_review(state: SquadState) -> str:
     if state.get("active_flow") == "review":
+        if "privacy" in state.get("on_demand_agents", []):
+            return next_after_check(state, "engineering_review", "privacy")
+        if "appsec" in state.get("on_demand_agents", []):
+            return next_after_check(state, "engineering_review", "appsec")
         return "cos"
     return next_after_check(state, "engineering_review", "qa_execution")
 
@@ -879,6 +1031,9 @@ builder = StateGraph(SquadState)
 builder.add_node("intake", intake_node)
 builder.add_node("discovery", discovery_node)
 builder.add_node("writing", writing_node)
+builder.add_node("ux_ui", ux_ui_node)
+builder.add_node("privacy", privacy_node)
+builder.add_node("appsec", appsec_node)
 builder.add_node("product", product_node)
 builder.add_node("qa_planning", qa_planning_node)
 builder.add_node("engineering", engineering_node)
@@ -902,6 +1057,11 @@ builder.add_conditional_edges(
 builder.add_conditional_edges(
     "product",
     route_after_product,
+    ["ux_ui", "qa_planning", "cos"]
+)
+builder.add_conditional_edges(
+    "ux_ui",
+    route_after_ux_ui,
     ["qa_planning", "cos"]
 )
 builder.add_conditional_edges(
@@ -911,7 +1071,17 @@ builder.add_conditional_edges(
 )
 builder.add_conditional_edges(
     "engineering",
-    lambda state: next_after_check(state, "engineering", "operator"),
+    route_after_engineering,
+    ["privacy", "appsec", "operator", "cos"]
+)
+builder.add_conditional_edges(
+    "privacy",
+    route_after_privacy,
+    ["appsec", "operator", "cos"]
+)
+builder.add_conditional_edges(
+    "appsec",
+    route_after_appsec,
     ["operator", "cos"]
 )
 builder.add_conditional_edges(
@@ -922,7 +1092,7 @@ builder.add_conditional_edges(
 builder.add_conditional_edges(
     "engineering_review",
     route_after_engineering_review,
-    ["qa_execution", "cos"]
+    ["privacy", "appsec", "qa_execution", "cos"]
 )
 builder.add_conditional_edges(
     "writing",
