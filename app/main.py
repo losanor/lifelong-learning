@@ -6,8 +6,10 @@ from app.context_policy import build_context_bundle
 from app.retry_policy import initialize_retry_state
 from app.run_registry import generate_run_id, append_run_start, append_run_end
 from app.observability import build_run_config
+from app.operational_store import metrics_snapshot, record_run
 
 import sys
+from time import perf_counter
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -55,6 +57,7 @@ Ressalva opcional:
     compact_memory = read_compact_memory()
     context_bundle = build_context_bundle(mode="normal")
 
+    started_at = perf_counter()
     result = graph.invoke({
         "run_id": run_id,
         "user_goal": user_goal,
@@ -77,6 +80,7 @@ Ressalva opcional:
         "raw_model_outputs": {},
         "escalations": []
     }, config=build_run_config(run_id=run_id))
+    duration_ms = round((perf_counter() - started_at) * 1000)
 
     append_run_end(
         run_id=run_id,
@@ -85,6 +89,12 @@ Ressalva opcional:
         route_action=result.get("cos_route_action", ""),
         route_decision=result.get("route_decision", ""),
         human_escalation_created=result.get("human_escalation_created", False),
+    )
+    record_run(
+        result,
+        run_id=run_id,
+        user_goal=user_goal,
+        duration_ms=duration_ms,
     )
     print("\nDEBUG KEYS:", result.keys())
 
@@ -169,3 +179,9 @@ Ressalva opcional:
 
     print("\n=== RUN ID ===\n")
     print(result.get("run_id", ""))
+
+    print("\n=== DURATION MS ===\n")
+    print(duration_ms)
+
+    print("\n=== METRICS SNAPSHOT ===\n")
+    print(metrics_snapshot())

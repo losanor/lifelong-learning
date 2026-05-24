@@ -30,6 +30,8 @@ Camadas compartilhadas:
 - `app/intake.py`: politica de agentes fixos e sinais de especialistas sob demanda.
 - `app/workspace_context.py`: snapshot local de Git, docs e arquivos disponiveis
   para trabalho real sem depender de LLM.
+- `app/operational_store.py`: persistencia SQLite de runs, outputs e metricas.
+- `app/evals.py`: bateria deterministica de cenarios para medir aplicacao real.
 - `app/orchestrator.py`: CMO textual e checks de Resumo Estruturado/ECE no grafo.
 - `data/`: logs, memoria compacta, politicas, decisoes e escaladas.
 - `app/prompts/`: prompts do nucleo fixo e dos especialistas sob demanda.
@@ -53,6 +55,17 @@ $env:USE_MOCK_MODEL="true"
 
 Para o modelo real, configure `ANTHROPIC_API_KEY` e deixe
 `USE_MOCK_MODEL=false`.
+
+Para executar a bateria operacional no modo mock:
+
+```powershell
+$env:USE_MOCK_MODEL="true"
+.\.venv\Scripts\python.exe -m app.evals
+```
+
+O runtime grava `data/squad_runtime.sqlite3` localmente. O banco nao entra no
+Git; ele serve para consultar volume, acionabilidade, C3, escaladas, duracao e
+resultados dos evals.
 
 ## Observabilidade
 
@@ -88,6 +101,10 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
 - O CoS recebe os checks operacionais antes de decidir a rota.
 - O CoS usa contexto decisorio compacto no caminho normal; `full_context` fica
   para auditoria e debug.
+- O SQLite registra runs e artefatos estruturados sem depender de parsing de
+  logs Markdown.
+- Os evals cobrem feature, bugfix, documentacao, review, decisao, research e
+  entrega com Discovery; a meta minima de aceite e nota `8.7`.
 - A camada contratual Pydantic cobre CMO estruturado, Shared Memory,
   observabilidade de handoffs e metricas de saude.
 
@@ -102,3 +119,5 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
   que aplicar o pacote operacional.
 - Validacao automatica de performance do modelo depende do provedor real,
   latencia de rede, tamanho de contexto e volume dos logs compactados.
+- A bateria inicial usa o mock para medir arquitetura e contratos; a proxima
+  baseline deve rodar com modelo real e custos/latencias observados no LangSmith.

@@ -1,5 +1,8 @@
 import unittest
+from pathlib import Path
 
+from app.evals import EvalScenario, assess_scenario
+from app.operational_store import metrics_snapshot, record_run
 from app.orchestrator import inspect_agent_output, update_orchestrator_checks
 from app.retry_policy import initialize_retry_state, resolve_retry_permission
 from app.structured_output import CoSOutputEnvelope, mock_agent_output, safe_parse_agent_output
@@ -64,14 +67,68 @@ class OperationalContractsTest(unittest.TestCase):
         self.assertTrue(output.operational_artifact.recommended_actions)
         self.assertTrue(output.operational_artifact.verification_steps)
 
-    def test_workspace_context_marks_local_docs_without_git_assumption(self):
+    def test_workspace_context_reports_docs_and_git_policy(self):
         context = capture_workspace_context()
         formatted = format_workspace_context(context)
 
-        self.assertFalse(context.git_repo)
         self.assertIn("README.md", context.documentation_refs)
         self.assertTrue(any(ref.endswith(".py") for ref in context.project_refs))
-        self.assertIn("nao presuma PR", formatted)
+        if context.git_repo:
+            self.assertIn("Git local detectado", formatted)
+        else:
+            self.assertIn("nao presuma PR", formatted)
+
+    def test_operational_store_records_run_metrics(self):
+        db_path = Path("data") / "test_runtime.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        try:
+            output, _ = safe_parse_agent_output(
+                mock_agent_output("writing", "# Doc", ece=ECE.C1),
+                "writing",
+            )
+            result = {
+                "active_flow": "docs",
+                "route_status": "ended",
+                "cos_decision": "GO",
+                "cos_route_action": "END_CYCLE",
+                "route_decision": "end_cycle",
+                "human_escalation_created": False,
+                "operational_packet": {"execution_ready": True},
+                "structured_outputs": {"writing": output.model_dump(mode="json")},
+                "orchestrator_checks": {"writing": {"schema_valid": True}},
+            }
+            record_run(result, run_id="unit_run", user_goal="Documentar README", duration_ms=12, db_path=db_path)
+            metrics = metrics_snapshot(db_path)
+
+            self.assertEqual(metrics["run_count"], 1)
+            self.assertEqual(metrics["execution_ready_rate"], 1.0)
+            self.assertEqual(metrics["average_agents_per_run"], 1.0)
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_eval_assessment_rewards_actionable_correct_flow(self):
+        output, _ = safe_parse_agent_output(
+            mock_agent_output("writing", "# Doc", ece=ECE.C1),
+            "writing",
+        )
+        scenario = EvalScenario("docs", "Documentar README.", "docs", ("writing",), ("engineering",))
+        result = {
+            "active_flow": "docs",
+            "structured_outputs": {"writing": output.model_dump(mode="json")},
+            "operational_packet": {
+                "execution_ready": True,
+                "recommended_actions": ["Atualizar README."],
+                "verification_steps": ["Revisar conteudo."],
+            },
+            "orchestrator_checks": {"writing": {"schema_valid": True}},
+        }
+
+        score, findings = assess_scenario(scenario, result)
+
+        self.assertEqual(score, 10.0)
+        self.assertFalse(findings)
 
     def test_operator_cmo_rejects_c3_spec(self):
         memoria = SharedMemory(
