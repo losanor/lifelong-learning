@@ -1,6 +1,8 @@
 from pathlib import Path
 from datetime import datetime
 
+from app.scoped_storage import read_scoped_or_seed, scoped_path
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 HANDOFF_LOG_PATH = BASE_DIR / "data" / "handoff_log.md"
@@ -13,6 +15,7 @@ def append_handoff(
     summary: str,
     ece: str,
     run_id: str = "",
+    memory_namespace: str = "",
     blockers: str = "Nenhum bloqueio informado.",
     next_step: str = "Não informado.",
     escalate_to_cos: str = "Não."
@@ -20,7 +23,8 @@ def append_handoff(
     """
     Registra uma passagem entre agentes no Handoff Log.
     """
-    HANDOFF_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    path = scoped_path("handoff_log.md", memory_namespace)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -54,15 +58,12 @@ Data/hora: {timestamp}
 {escalate_to_cos}
 """
 
-    with HANDOFF_LOG_PATH.open("a", encoding="utf-8") as file:
+    with path.open("a", encoding="utf-8") as file:
         file.write(entry)
 
 
-def read_handoff_log() -> str:
+def read_handoff_log(memory_namespace: str = "") -> str:
     """
     Lê o Handoff Log completo.
     """
-    if not HANDOFF_LOG_PATH.exists():
-        return ""
-
-    return HANDOFF_LOG_PATH.read_text(encoding="utf-8")
+    return read_scoped_or_seed("handoff_log.md", memory_namespace)

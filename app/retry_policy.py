@@ -52,8 +52,7 @@ def resolve_retry_permission(
     """
     Decide se um retorno solicitado pelo CoS pode ser permitido.
 
-    Nesta etapa, isso só calcula permissão.
-    Não executa loop automático.
+    A permissao e consumida pelo grafo para executar retorno com limite.
     """
 
     if retry_state is None:

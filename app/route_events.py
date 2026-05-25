@@ -2,6 +2,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any
 
+from app.scoped_storage import read_scoped_or_seed, scoped_path
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ROUTE_EVENTS_PATH = BASE_DIR / "data" / "route_events.md"
@@ -11,11 +13,13 @@ def append_route_event(
     user_goal: str,
     route_summary: dict[str, Any],
     run_id: str = "",
+    memory_namespace: str = "",
 ) -> None:
     """
     Registra um evento de roteamento no Route Events Log.
     """
-    ROUTE_EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    path = scoped_path("route_events.md", memory_namespace)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -65,15 +69,12 @@ def append_route_event(
 {route_summary.get("retry_block_reason", "")}
 """
 
-    with ROUTE_EVENTS_PATH.open("a", encoding="utf-8") as file:
+    with path.open("a", encoding="utf-8") as file:
         file.write(entry)
 
 
-def read_route_events() -> str:
+def read_route_events(memory_namespace: str = "") -> str:
     """
     Lê o Route Events Log completo.
     """
-    if not ROUTE_EVENTS_PATH.exists():
-        return ""
-
-    return ROUTE_EVENTS_PATH.read_text(encoding="utf-8")
+    return read_scoped_or_seed("route_events.md", memory_namespace)

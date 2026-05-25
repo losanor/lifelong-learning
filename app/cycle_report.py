@@ -1,6 +1,8 @@
 from pathlib import Path
 from datetime import datetime
 
+from app.scoped_storage import read_scoped_or_seed, scoped_path
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CYCLE_REPORT_PATH = BASE_DIR / "data" / "cycle_reports.md"
@@ -13,11 +15,13 @@ def append_cycle_report(
     route_action: str = "UNKNOWN",
     ece: str = "UNKNOWN",
     run_id: str = "",
+    memory_namespace: str = "",
 ) -> None:
     """
     Registra o relatório final de ciclo emitido pelo CoS.
     """
-    CYCLE_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    path = scoped_path("cycle_reports.md", memory_namespace)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -46,15 +50,12 @@ def append_cycle_report(
 {cos_output}
 """
 
-    with CYCLE_REPORT_PATH.open("a", encoding="utf-8") as file:
+    with path.open("a", encoding="utf-8") as file:
         file.write(entry)
 
 
-def read_cycle_reports() -> str:
+def read_cycle_reports(memory_namespace: str = "") -> str:
     """
     Lê os relatórios de ciclo.
     """
-    if not CYCLE_REPORT_PATH.exists():
-        return ""
-
-    return CYCLE_REPORT_PATH.read_text(encoding="utf-8")
+    return read_scoped_or_seed("cycle_reports.md", memory_namespace)

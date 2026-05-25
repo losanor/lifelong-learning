@@ -2,6 +2,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any
 
+from app.scoped_storage import read_scoped_or_seed, scoped_path
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 HUMAN_ESCALATIONS_PATH = BASE_DIR / "data" / "human_escalations.md"
@@ -12,6 +14,7 @@ def append_human_escalation(
     reason: str,
     required_decision: str,
     run_id: str = "",
+    memory_namespace: str = "",
     source_agent: str = "CoS / Orchestrator",
     blockers: str = "Não informado.",
     recommendation: str = "Aguardar decisão humana antes de continuar.",
@@ -21,7 +24,8 @@ def append_human_escalation(
     """
     Registra uma escalada humana no Human Escalations Log.
     """
-    HUMAN_ESCALATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    path = scoped_path("human_escalations.md", memory_namespace)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     metadata = metadata or {}
@@ -64,18 +68,15 @@ def append_human_escalation(
 {metadata_lines}
 """
 
-    with HUMAN_ESCALATIONS_PATH.open("a", encoding="utf-8") as file:
+    with path.open("a", encoding="utf-8") as file:
         file.write(entry)
 
 
-def read_human_escalations() -> str:
+def read_human_escalations(memory_namespace: str = "") -> str:
     """
     Lê o log de escaladas humanas.
     """
-    if not HUMAN_ESCALATIONS_PATH.exists():
-        return ""
-
-    return HUMAN_ESCALATIONS_PATH.read_text(encoding="utf-8")
+    return read_scoped_or_seed("human_escalations.md", memory_namespace)
 
 
 def should_create_human_escalation(state: dict[str, Any]) -> bool:

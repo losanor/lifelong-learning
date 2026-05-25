@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from app.scoped_storage import read_scoped_or_seed
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -21,7 +23,7 @@ def read_context_policy() -> str:
     return read_file(CONTEXT_POLICY_PATH)
 
 
-def build_context_bundle(mode: str = "normal") -> dict[str, str]:
+def build_context_bundle(mode: str = "normal", memory_namespace: str = "") -> dict[str, str]:
     """
     Monta o pacote de contexto conforme a política de contexto.
 
@@ -32,10 +34,10 @@ def build_context_bundle(mode: str = "normal") -> dict[str, str]:
     - full_context
     """
 
-    compact_memory = read_file(COMPACT_MEMORY_PATH)
-    shared_memory = read_file(SHARED_MEMORY_PATH)
-    decision_log = read_file(DECISION_LOG_PATH)
-    handoff_log = read_file(HANDOFF_LOG_PATH)
+    compact_memory = read_scoped_or_seed("compact_memory.md", memory_namespace)
+    shared_memory = read_scoped_or_seed("shared_memory.md", memory_namespace)
+    decision_log = read_scoped_or_seed("decision_log.md", memory_namespace)
+    handoff_log = read_scoped_or_seed("handoff_log.md", memory_namespace)
     context_policy = read_context_policy()
     retry_policy = read_file(RETRY_POLICY_PATH)
 
@@ -111,10 +113,10 @@ def get_agent_context_mode(agent_name: str) -> str:
     return mapping.get(agent_name, "normal")
 
 
-def build_agent_context(agent_name: str) -> dict[str, str]:
+def build_agent_context(agent_name: str, memory_namespace: str = "") -> dict[str, str]:
     """
     Monta o pacote de contexto adequado para um agente específico.
     """
 
     mode = get_agent_context_mode(agent_name)
-    return build_context_bundle(mode=mode)
+    return build_context_bundle(mode=mode, memory_namespace=memory_namespace)

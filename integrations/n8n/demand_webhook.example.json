@@ -1,0 +1,56 @@
+{
+  "name": "Squad - Queue Demand",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "name": "event_id", "value": "={{ 'manual-' + $now.toMillis() }}", "type": "string" },
+            { "name": "project_id", "value": "default", "type": "string" },
+            { "name": "initiative_id", "value": "inbox", "type": "string" },
+            { "name": "user_goal", "value": "Revisar nova demanda recebida pelo n8n.", "type": "string" }
+          ]
+        }
+      },
+      "id": "prepare-demand",
+      "name": "Prepare Demand",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SQUAD_API_URL + '/api/hooks/n8n/demands' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.SQUAD_WEBHOOK_TOKEN }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}"
+      },
+      "id": "queue-demand",
+      "name": "Queue in Squad",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [710, 300]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": { "main": [[{ "node": "Prepare Demand", "type": "main", "index": 0 }]] },
+    "Prepare Demand": { "main": [[{ "node": "Queue in Squad", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": {}
+}

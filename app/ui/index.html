@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Squad Operations</title>
+  <link rel="stylesheet" href="/styles.css?v=1">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">S</span>
+      <div>
+        <h1>Squad Operations</h1>
+        <p id="system-status">Conectando...</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button class="icon-button" id="refresh" type="button" title="Atualizar fila" aria-label="Atualizar fila">&#8635;</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="sidebar" aria-label="Fila de aprovacoes">
+      <div class="section-head">
+        <h2>Pendencias</h2>
+        <span class="count" id="pending-count">0</span>
+      </div>
+      <nav class="segments" aria-label="Filtro de fila">
+        <button type="button" class="segment active" data-filter="pending">Pendentes</button>
+        <button type="button" class="segment" data-filter="all">Todas</button>
+      </nav>
+      <div class="request-list" id="request-list"></div>
+      <div class="subqueue">
+        <div class="section-head">
+          <h2>Demandas externas</h2>
+          <span class="count" id="demand-count">0</span>
+        </div>
+        <div class="demand-list" id="demand-list"></div>
+      </div>
+    </aside>
+
+    <section class="main-panel">
+      <div class="metrics" id="metrics" aria-label="Metricas"></div>
+      <div class="empty-detail" id="empty-detail">
+        <h2>Nenhuma solicitacao selecionada</h2>
+        <p>Aguardando decisao operacional.</p>
+      </div>
+      <article class="request-detail" id="request-detail" hidden>
+        <header class="detail-header">
+          <div>
+            <p class="eyebrow" id="detail-scope"></p>
+            <h2 id="detail-title"></h2>
+          </div>
+          <span class="status" id="detail-status"></span>
+        </header>
+        <p class="reason" id="detail-reason"></p>
+        <div class="detail-grid">
+          <section class="block">
+            <h3>Alvos autorizados</h3>
+            <div class="tags" id="target-refs"></div>
+            <h3>Acoes propostas</h3>
+            <ul id="recommended-actions"></ul>
+            <h3>Verificacao</h3>
+            <ul id="verification-steps"></ul>
+          </section>
+          <section class="block">
+            <h3>Timeline</h3>
+            <ol class="timeline" id="timeline"></ol>
+          </section>
+        </div>
+
+        <section class="diff-panel">
+          <div class="section-head">
+            <h3>Patch candidato</h3>
+            <span id="patch-result" class="muted"></span>
+          </div>
+          <label class="sr-only" for="patch-text">Diff unificado</label>
+          <textarea id="patch-text" spellcheck="false" placeholder="Cole aqui um diff unificado aprovado para validacao."></textarea>
+          <div class="control-row">
+            <label class="field">
+              <span>Workspace</span>
+              <input id="workspace-root" type="text" value=".">
+            </label>
+            <label class="checkbox"><input id="validate-compile" type="checkbox"> Python compile</label>
+            <label class="checkbox"><input id="validate-tests" type="checkbox"> Unit tests</label>
+          </div>
+          <div class="actions" id="actions"></div>
+        </section>
+        <section class="evidence" id="evidence" hidden>
+          <h3>Evidencias</h3>
+          <pre id="evidence-content"></pre>
+        </section>
+        <section class="evidence" id="memory" hidden>
+          <h3>Memoria da iniciativa</h3>
+          <pre id="memory-content"></pre>
+        </section>
+      </article>
+    </section>
+
+    <aside class="activity" aria-label="Runs recentes">
+      <div class="section-head">
+        <h2>Runs recentes</h2>
+      </div>
+      <div id="run-list" class="run-list"></div>
+    </aside>
+  </main>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script defer src="/app.js?v=1"></script>
+</body>
+</html>

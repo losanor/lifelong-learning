@@ -171,6 +171,17 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 payload_json TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS automation_demands (
+                event_id TEXT PRIMARY KEY,
+                received_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                initiative_id TEXT NOT NULL,
+                user_goal TEXT NOT NULL,
+                status TEXT NOT NULL,
+                metadata_json TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_workflow_checkpoints_thread
                 ON workflow_checkpoints(thread_id, checkpoint_id);
             """
@@ -750,6 +761,82 @@ def pending_work_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, An
             }
         )
     return {"pending_count": len(pending), "pending": pending}
+
+
+def recent_runs_snapshot(
+    *,
+    limit: int = 20,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    initialize_schema(db_path)
+    safe_limit = max(1, min(limit, 100))
+    with _connection(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT run_id, created_at, project_id, initiative_id, user_goal,
+                active_flow, execution_tier, status, execution_ready,
+                agent_count, duration_ms
+            FROM runs
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+    return {"run_count": len(rows), "runs": [dict(row) for row in rows]}
+
+
+def record_automation_demand(
+    *,
+    event_id: str,
+    source: str,
+    project_id: str,
+    initiative_id: str,
+    user_goal: str,
+    metadata: dict[str, Any] | None = None,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    if not event_id.strip() or not user_goal.strip():
+        raise ValueError("Automation event_id and user_goal are required.")
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO automation_demands (
+                event_id, received_at, source, project_id, initiative_id,
+                user_goal, status, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO NOTHING
+            """,
+            (
+                event_id.strip()[:120],
+                datetime.now(timezone.utc).isoformat(),
+                source.strip()[:40] or "n8n",
+                project_id.strip()[:120] or "default",
+                initiative_id.strip()[:120] or "default",
+                user_goal.strip()[:4000],
+                "queued_for_review",
+                json.dumps(metadata or {}, ensure_ascii=False),
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM automation_demands WHERE event_id=?",
+            (event_id.strip()[:120],),
+        ).fetchone()
+    demand = dict(row)
+    demand["metadata"] = json.loads(demand.pop("metadata_json"))
+    return demand
+
+
+def automation_demand_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        rows = connection.execute(
+            "SELECT * FROM automation_demands ORDER BY received_at DESC LIMIT 100"
+        ).fetchall()
+    demands = [dict(row) for row in rows]
+    for demand in demands:
+        demand["metadata"] = json.loads(demand.pop("metadata_json"))
+    return {"demand_count": len(demands), "demands": demands}
 
 
 def execution_request_snapshot(

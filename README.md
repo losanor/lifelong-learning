@@ -35,10 +35,12 @@ Gates sob demanda:
 Camadas compartilhadas:
 
 - `docs/target_architecture.md`: stack alvo e roadmap da interface propria.
-- `app/project_scope.py`: namespace de projeto/iniciativa para memoria futura.
+- `langgraph.json` e `docs/deployment.md`: empacotamento e operacao no Agent Server.
+- `app/project_scope.py` e `app/scoped_storage.py`: memoria por projeto/iniciativa.
 - `app/execution_policy.py`: tiers, budgets e aprovacoes previstas.
 - `app/execution_engine.py`: fila de execucao e approval gate em modo dry-run.
 - `app/workflow_recovery.py`: checkpoints duraveis e retomada da fila HITL.
+- `app/operational_api.py` e `app/ui/`: console local para fila, diffs e evidencias.
 - `contracts.py`: CMO, Resumo Estruturado, Shared Memory e ECE.
 - `cmo_especializado.py`: factories de CMO para handoffs estruturados.
 - `app/intake.py`: politica de agentes fixos e sinais de especialistas sob demanda.
@@ -112,6 +114,33 @@ Para consultar e decidir a fila local:
 .\.venv\Scripts\python.exe -m app.workflow_recovery resume <request_id>
 ```
 
+Para operar pela interface:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.operational_api --port 8765
+```
+
+Abra `http://127.0.0.1:8765`. A API e a interface vinculam por padrao somente
+ao host local e reutilizam os mesmos checkpoints e gates do CLI.
+
+## Automacao com n8n
+
+O n8n fica restrito a entrada de demandas. Configure `SQUAD_WEBHOOK_TOKEN` no
+ambiente do servidor e envie `POST /api/hooks/n8n/demands` com Bearer Token,
+`event_id`, `project_id`, `initiative_id` e `user_goal`. Eventos repetidos com
+o mesmo `event_id` nao duplicam trabalho. A demanda aparece na console como
+`queued_for_review`; o webhook nunca dispara agentes ou efeitos automaticamente.
+
+Veja [docs/n8n_integration.md](docs/n8n_integration.md) e importe
+`integrations/n8n/demand_webhook.example.json` como base no n8n.
+
+## Deployment
+
+O repositorio inclui `langgraph.json` com o grafo `squad` pronto para ser
+carregado pelo LangSmith Deployment / Agent Server. O procedimento e as
+fronteiras entre a console SQLite local e a persistencia distribuida estao em
+[docs/deployment.md](docs/deployment.md).
+
 Para iniciar uma baseline real rastreada, primeiro configure chaves somente em
 `.env` (nunca em `.env.example`) e rode um piloto de baixo custo:
 
@@ -161,7 +190,8 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
 
 ## O que esta validado
 
-- O grafo registra handoffs, rotas, retries e escaladas humanas.
+- O grafo registra handoffs, rotas, executa retries autorizados com limite e
+  cria escaladas humanas ao atingir bloqueios.
 - O Orchestrator injeta CMO textual e bloqueia passagem direta quando resumo/ECE
   falham ou quando o output final do agente e C3.
 - Outputs criticos usam envelope JSON validado por Pydantic; Markdown segue no
@@ -183,8 +213,10 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
   aplicabilidade, aplicacao controlada, validacoes allowlisted e rollback.
 - Cada transicao humana/executora produz checkpoint SQLite append-only; apos
   reinicio, `workflow_recovery` recupera itens pendentes e sua timeline.
+- Novas runs gravam logs operacionais sob `data/namespaces/<projeto>/<iniciativa>/`;
+  a memoria global legada permanece apenas como seed de leitura.
 - O intake cria namespace deterministico por projeto/iniciativa e persiste uma
-  politica de custo/aprovacao para a futura interface operacional.
+  politica de custo/aprovacao exibida na interface operacional.
 - Os evals cobrem feature, bugfix, documentacao, review, decisao, research,
   entrega com Discovery, entrega sensivel e review de seguranca; a meta minima
   de aceite e nota `8.7`.
@@ -197,20 +229,19 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
   validarem viram falha C3 e sao roteadas ao CoS.
 - Discovery real precisa de fontes fornecidas ao agente ou de uma integracao de
   pesquisa; sem fonte factual o prompt deve marcar C3.
-- O `Workspace Context` informa refs e estado Git, mas nao executa alteracoes
-  sozinho; implementation, docs e commits continuam dependendo do operador
-  que aplicar o pacote operacional.
+- O `Workspace Context` informa refs e estado Git; a aplicacao controlada exige
+  diff aprovado, validacoes e evidencia antes de qualquer entrega Git.
 - A aplicacao controlada ainda nao cria commits ou publica branches; esses
   efeitos Git seguem como operacao deliberada apos revisar evidencias.
 - O checkpoint duravel local cobre o workflow de efeitos e aprovacoes. Em
   producao distribuida, o backend recomendado continua sendo Agent Server com
   PostgreSQL para retomar tambem a execucao interna do grafo.
-- O namespace ja e registrado, mas os arquivos de memoria atuais ainda
-  precisam ser migrados para armazenamento particionado por iniciativa.
+- O webhook n8n somente enfileira demandas; transformar uma demanda recebida
+  em run automatica exige politica de intake e autenticacao de producao.
 - Validacao automatica de performance do modelo depende do provedor real,
   latencia de rede, tamanho de contexto e volume dos logs compactados.
-- A bateria inicial usa o mock para medir arquitetura e contratos; a proxima
-  baseline deve rodar com modelo real e custos/latencias observados no LangSmith.
+- Evals mock medem contratos de forma barata; baselines reais devem ser
+  repetidas periodicamente para acompanhar custo e latencia no LangSmith.
 
 Referencias oficiais para operar LangSmith:
 

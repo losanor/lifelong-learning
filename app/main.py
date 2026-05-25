@@ -1,7 +1,3 @@
-from app.memory import read_shared_memory
-from app.decision_log import read_decision_log
-from app.handoff_log import read_handoff_log
-from app.compaction import read_compact_memory
 from app.context_policy import build_context_bundle
 from app.retry_policy import initialize_retry_state
 from app.run_registry import generate_run_id, append_run_start, append_run_end
@@ -26,43 +22,16 @@ if __name__ == "__main__":
     run_id = generate_run_id()
     append_run_start(run_id=run_id, user_goal=user_goal)
 
-    manual_validation_result = """
-Validação manual realizada pelo usuário.
-
-Status geral: aprovado.
-
-Testes aprovados:
-- MVP abriu diretamente no navegador, sem login e sem wizard.
-- Campo de tarefa apareceu com placeholder em português.
-- Estado vazio apareceu corretamente.
-- Tarefa foi criada via Enter.
-- Tarefa foi criada via botão Adicionar.
-- Campo vazio não criou tarefa.
-- Checkbox marcou tarefa como concluída.
-- Checkbox desmarcou tarefa concluída.
-- Tarefa concluída permaneceu visível com texto riscado.
-- Recarregar a página manteve as tarefas salvas.
-- localStorage criou a chave tasks.
-- localStorage criou a chave analytics.
-- analytics registrou first_visit_at.
-- analytics registrou last_visit_at.
-- analytics registrou visit_count.
-- analytics registrou visit_dates.
-- visit_count incrementou ao recarregar.
-- visit_dates não duplicou a mesma data no mesmo dia.
-- Não foram identificados erros críticos no uso básico.
-
-Ressalva opcional:
-- A geração de ID poderia ser reforçada com sufixo aleatório, mas não bloqueia o MVP Sujo.
-"""
-    shared_memory = read_shared_memory()
-    decision_log = read_decision_log()
-    handoff_log = read_handoff_log()
-    compact_memory = read_compact_memory()
-    context_bundle = build_context_bundle(mode="normal")
+    manual_validation_result = input(
+        "Informe evidencia de validacao ja executada, se houver (opcional): "
+    ).strip()
     preflight_intake = decide_intake(user_goal)
     preflight_workspace = capture_workspace_context(".")
     preflight_scope = resolve_work_scope(".")
+    context_bundle = build_context_bundle(
+        mode="normal",
+        memory_namespace=preflight_scope.memory_namespace,
+    )
 
     started_at = perf_counter()
     result = graph.invoke({

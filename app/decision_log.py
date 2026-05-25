@@ -1,19 +1,18 @@
 from pathlib import Path
 from datetime import datetime
 
+from app.scoped_storage import read_scoped_or_seed, scoped_path
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DECISION_LOG_PATH = BASE_DIR / "data" / "decision_log.md"
 
 
-def read_decision_log() -> str:
+def read_decision_log(memory_namespace: str = "") -> str:
     """
     Lê o Decision Log formal da squad.
     """
-    if not DECISION_LOG_PATH.exists():
-        return ""
-
-    return DECISION_LOG_PATH.read_text(encoding="utf-8")
+    return read_scoped_or_seed("decision_log.md", memory_namespace)
 
 
 def append_decision(
@@ -24,12 +23,14 @@ def append_decision(
     impact: str,
     owner: str,
     status: str = "Ativa",
+    memory_namespace: str = "",
     review_criteria: str = "Revisar quando houver mudança relevante de contexto."
 ) -> None:
     """
     Adiciona uma decisão formal ao Decision Log.
     """
-    DECISION_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    path = scoped_path("decision_log.md", memory_namespace)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     date = datetime.now().strftime("%Y-%m-%d")
 
@@ -56,5 +57,5 @@ Dono: {owner}
 {review_criteria}
 """
 
-    with DECISION_LOG_PATH.open("a", encoding="utf-8") as file:
+    with path.open("a", encoding="utf-8") as file:
         file.write(entry)

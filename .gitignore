@@ -11,5 +11,6 @@ data/route_events.md
 data/run_registry.md
 data/run_output*.md
 data/*.sqlite3
+data/namespaces/
 data/eval_report*.json
 data/baseline_report*.json

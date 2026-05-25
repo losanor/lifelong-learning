@@ -4,12 +4,23 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
+import threading
+import urllib.error
+import urllib.request
 
 import app.graph as graph_module
 from app.evals import EvalScenario, assess_scenario
 from app.mock_model import MockResponse
 from app.observability import build_run_config
+from app.operational_api import make_handler
+from app.context_policy import build_context_bundle
+from app.cycle_report import append_cycle_report, read_cycle_reports
+from app.handoff_log import append_handoff, read_handoff_log
+from app.human_escalation import append_human_escalation, read_human_escalations
+from app.memory import append_to_shared_memory, read_shared_memory
 from app.project_scope import resolve_work_scope
+from app.route_events import append_route_event, read_route_events
+from app.scoped_storage import scoped_path
 from app.execution_engine import (
     apply_execution_request,
     create_execution_request,
@@ -619,6 +630,117 @@ class OperationalContractsTest(unittest.TestCase):
             if db_path.exists():
                 db_path.unlink()
 
+    def test_operations_api_exposes_dashboard_and_records_approval(self):
+        from http.server import ThreadingHTTPServer
+
+        db_path = Path("data") / "test_operations_api.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        server = None
+        try:
+            result = {
+                "active_flow": "docs",
+                "execution_policy": {
+                    "execution_tier": "quick",
+                    "approval_required_actions": ["write_files"],
+                },
+                "route_status": "ended",
+                "operational_packet": {
+                    "execution_ready": True,
+                    "target_refs": ["README.md"],
+                    "recommended_actions": ["Atualizar README."],
+                    "verification_steps": ["Revisar diff."],
+                    "git_actions": [],
+                },
+                "structured_outputs": {},
+                "orchestrator_checks": {},
+            }
+            record_run(result, run_id="run_api", user_goal="Atualizar README.", db_path=db_path)
+            request = create_execution_request(result, run_id="run_api", db_path=db_path)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(db_path))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_port}"
+
+            with urllib.request.urlopen(f"{base_url}/api/dashboard") as response:
+                dashboard = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(dashboard["pending"]["pending_count"], 1)
+
+            payload = json.dumps({"by": "owner", "notes": "API approval"}).encode("utf-8")
+            api_request = urllib.request.Request(
+                f"{base_url}/api/requests/{request['request_id']}/approve",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(api_request) as response:
+                approved = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(approved["status"], "approved_for_dry_run")
+        finally:
+            if server:
+                server.shutdown()
+                server.server_close()
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_n8n_webhook_requires_token_and_queues_idempotent_demand(self):
+        from http.server import ThreadingHTTPServer
+
+        db_path = Path("data") / "test_n8n_hook.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        server = None
+        try:
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", 0),
+                make_handler(db_path, webhook_token="test-token"),
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            endpoint = f"http://127.0.0.1:{server.server_port}/api/hooks/n8n/demands"
+            payload = json.dumps(
+                {
+                    "event_id": "event-001",
+                    "project_id": "portal",
+                    "initiative_id": "intake",
+                    "user_goal": "Analisar nova solicitacao.",
+                }
+            ).encode("utf-8")
+            unauthorized = urllib.request.Request(
+                endpoint,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(unauthorized)
+            self.assertEqual(raised.exception.code, 401)
+            raised.exception.close()
+
+            authenticated = urllib.request.Request(
+                endpoint,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer test-token",
+                },
+                method="POST",
+            )
+            urllib.request.urlopen(authenticated).read()
+            urllib.request.urlopen(authenticated).read()
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{server.server_port}/api/demands"
+            ) as response:
+                demands = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(demands["demand_count"], 1)
+            self.assertEqual(demands["demands"][0]["status"], "queued_for_review")
+        finally:
+            if server:
+                server.shutdown()
+                server.server_close()
+            if db_path.exists():
+                db_path.unlink()
+
     def test_eval_assessment_accepts_expected_governance_c3(self):
         product, _ = safe_parse_agent_output(
             mock_agent_output("product", "# Product bloqueado", ece=ECE.C3),
@@ -778,6 +900,25 @@ class OperationalContractsTest(unittest.TestCase):
         self.assertFalse(blocked["retry_allowed"])
         self.assertTrue(blocked["retry_blocked"])
 
+    def test_cos_retry_routes_back_to_authorized_agent(self):
+        routed = graph_module.route_after_cos(
+            {
+                "route_decision": "return_requested",
+                "retry_allowed": True,
+                "retry_target": "engineering",
+            }
+        )
+        ended = graph_module.route_after_cos(
+            {
+                "route_decision": "human_escalation",
+                "retry_allowed": False,
+                "retry_target": "engineering",
+            }
+        )
+
+        self.assertEqual(routed, "engineering")
+        self.assertEqual(ended, "__end__")
+
     def test_intake_skips_discovery_for_delivery_goal(self):
         decision = decide_intake("Criar feature de cadastro e validar release.")
 
@@ -863,6 +1004,48 @@ class OperationalContractsTest(unittest.TestCase):
         self.assertEqual(scope.project_id, "client-portal")
         self.assertEqual(scope.initiative_id, "csv-export-v1")
         self.assertEqual(scope.memory_namespace, "client-portal:csv-export-v1")
+
+    def test_scoped_memory_keeps_initiative_handoffs_isolated(self):
+        namespace = "unit-project:isolated-initiative"
+        paths = [
+            scoped_path(filename, namespace)
+            for filename in (
+                "handoff_log.md",
+                "shared_memory.md",
+                "cycle_reports.md",
+                "route_events.md",
+                "human_escalations.md",
+            )
+        ]
+        for path in paths:
+            if path.exists():
+                path.unlink()
+        try:
+            append_handoff(
+                from_agent="Product",
+                to_agent="Engineering",
+                artifact="Scoped artifact",
+                summary="Only this initiative.",
+                ece="C1",
+                memory_namespace=namespace,
+            )
+            append_to_shared_memory("Scoped memory", "Only this memory.", namespace)
+            append_cycle_report("Goal", "Cycle scoped", run_id="run_scoped", memory_namespace=namespace)
+            append_route_event("Goal", {"route_decision": "end"}, memory_namespace=namespace)
+            append_human_escalation("Goal", "Reason scoped", "Decision", memory_namespace=namespace)
+            context = build_context_bundle("audit_debug", memory_namespace=namespace)
+
+            self.assertIn("Scoped artifact", read_handoff_log(namespace))
+            self.assertIn("Scoped artifact", context["handoff_log"])
+            self.assertIn("Only this memory", read_shared_memory(namespace))
+            self.assertIn("Cycle scoped", read_cycle_reports(namespace))
+            self.assertIn("Route Event", read_route_events(namespace))
+            self.assertIn("Reason scoped", read_human_escalations(namespace))
+            self.assertNotIn("Scoped artifact", read_handoff_log("unit-project:another"))
+        finally:
+            for path in paths:
+                if path.exists():
+                    path.unlink()
 
     def test_review_intake_signals_appsec_without_delivery_flow(self):
         decision = decide_intake("Fazer code review de autenticacao e permissoes do login.")

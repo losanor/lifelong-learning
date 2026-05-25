@@ -32,8 +32,9 @@ Primeiras telas previstas:
 ### M1 - Escopo e custo
 
 - Namespace por projeto/iniciativa.
+- Logs e memoria de novas runs particionados por iniciativa. (implementado)
 - Tiers de execucao e orcamento observavel.
-- Persistencia e metadata para futura UI.
+- Persistencia e metadata consumidas pela UI operacional. (implementado)
 
 ### M2 - Execution Engine
 
@@ -50,15 +51,19 @@ Primeiras telas previstas:
 - Checkpointer SQLite append-only para workflow de efeitos. (implementado local)
 - Interrupt/resume para aprovacoes e execucao controlada. (implementado local)
 - Recuperacao apos falha e fila de decisoes pendentes. (implementado local)
+- Empacotamento `langgraph.json` para carregar o grafo no Agent Server. (implementado)
 
 No deployment distribuido, os mesmos estados devem migrar para Agent Server e
 PostgreSQL, incluindo checkpoints internos do grafo LangGraph.
 
 ### M4 - Interface propria
 
-- UI consumindo API do Agent Server.
-- Aprovacoes, traces, custo, diffs, testes e memoria por projeto.
+- Console operacional local consumindo API do runtime. (implementado)
+- Aprovacoes, custo/tier, diffs, validacoes, timeline e runs recentes. (implementado)
+- Substituir API local pelo Agent Server no deployment distribuido.
 
 ### M5 - Automacoes externas
 
-- n8n para triggers e integracoes somente quando houver demanda concreta.
+- Webhook n8n autenticado, idempotente e sem auto-execucao. (implementado)
+- Interface apresenta demandas externas para revisao. (implementado)
+- Ativar novos triggers somente quando houver demanda concreta.

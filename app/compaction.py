@@ -1,6 +1,8 @@
 from pathlib import Path
 from datetime import datetime
 
+from app.scoped_storage import read_scoped_or_seed, scoped_path
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -16,18 +18,17 @@ def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def write_compact_memory(content: str) -> None:
-    COMPACT_MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    COMPACT_MEMORY_PATH.write_text(content, encoding="utf-8")
+def write_compact_memory(content: str, memory_namespace: str = "") -> None:
+    path = scoped_path("compact_memory.md", memory_namespace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
 
 
-def read_compact_memory() -> str:
-    if not COMPACT_MEMORY_PATH.exists():
-        return ""
-    return COMPACT_MEMORY_PATH.read_text(encoding="utf-8")
+def read_compact_memory(memory_namespace: str = "") -> str:
+    return read_scoped_or_seed("compact_memory.md", memory_namespace)
 
 
-def generate_manual_compaction() -> str:
+def generate_manual_compaction(memory_namespace: str = "") -> str:
     """
     Gera uma compactação simples, determinística e sem chamada de LLM.
 
@@ -36,9 +37,9 @@ def generate_manual_compaction() -> str:
     pegando trechos finais dos logs e mantendo decisões/bloqueios principais.
     """
 
-    shared_memory = read_file(SHARED_MEMORY_PATH)
-    decision_log = read_file(DECISION_LOG_PATH)
-    handoff_log = read_file(HANDOFF_LOG_PATH)
+    shared_memory = read_scoped_or_seed("shared_memory.md", memory_namespace)
+    decision_log = read_scoped_or_seed("decision_log.md", memory_namespace)
+    handoff_log = read_scoped_or_seed("handoff_log.md", memory_namespace)
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -132,10 +133,10 @@ Os logs completos continuam disponíveis para auditoria, mas não devem ser envi
     return compact
 
 
-def compact_memory() -> str:
+def compact_memory(memory_namespace: str = "") -> str:
     """
     Gera e salva a memória compactada.
     """
-    compact = generate_manual_compaction()
-    write_compact_memory(compact)
+    compact = generate_manual_compaction(memory_namespace)
+    write_compact_memory(compact, memory_namespace)
     return compact

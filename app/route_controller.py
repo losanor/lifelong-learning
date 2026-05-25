@@ -15,10 +15,10 @@ def decide_next_step(state: dict) -> RouteDecision:
     """
     Decide o próximo passo do grafo com base no output do CoS.
 
-    Versão segura:
+    Versao segura:
     - END_CYCLE encerra
     - ESCALATE_HUMAN encerra com escalada humana
-    - ROUTE_TO_* registra intenção de retorno, mas ainda não executa loop automático
+    - ROUTE_TO_* retorna ao agente enquanto a politica de retry permitir
     - UNKNOWN encerra como escalada implícita
     """
 

@@ -95,12 +95,12 @@ def invoke_validated(agent_name: str, prompt: str) -> ValidatedResponse:
         repair_attempted=True,
     )
 
-def format_agent_context(agent_name: str) -> str:
+def format_agent_context(agent_name: str, state: SquadState) -> str:
     """
     Monta o bloco de contexto que será enviado ao agente.
     """
 
-    context = build_agent_context(agent_name)
+    context = build_agent_context(agent_name, state.get("memory_namespace", ""))
   
     return (
         f"Context Mode:\n{context['context_mode']}\n\n"
@@ -269,6 +269,7 @@ def discovery_node(state: SquadState):
     
     append_handoff(
         run_id=run_id,
+        memory_namespace=state.get("memory_namespace", ""),
         from_agent="Discovery",
         to_agent="Product Lead",
         artifact="Discovery / Market Research",
@@ -296,7 +297,7 @@ def discovery_node(state: SquadState):
 def writing_node(state: SquadState):
     prompt = read_prompt("writing.txt")
     run_id = state.get("run_id", "")
-    context = format_agent_context("writing")
+    context = format_agent_context("writing", state)
     cmo = cmo_block(
         state,
         "writing",
@@ -316,6 +317,7 @@ def writing_node(state: SquadState):
 
     append_handoff(
         run_id=run_id,
+        memory_namespace=state.get("memory_namespace", ""),
         from_agent="Writing / Documentation",
         to_agent="CoS / Orchestrator",
         artifact="Writing Artifact",
@@ -353,6 +355,7 @@ def ux_ui_node(state: SquadState):
     )
     append_handoff(
         run_id=run_id,
+        memory_namespace=state.get("memory_namespace", ""),
         from_agent="UX/UI Lead",
         to_agent="QA Planning",
         artifact="UX/UI Gate",
@@ -386,6 +389,7 @@ def privacy_node(state: SquadState):
     )
     append_handoff(
         run_id=run_id,
+        memory_namespace=state.get("memory_namespace", ""),
         from_agent="Privacy & Compliance",
         to_agent="AppSec / Implementation Operator",
         artifact="Privacy Gate",
@@ -421,6 +425,7 @@ def appsec_node(state: SquadState):
     )
     append_handoff(
         run_id=run_id,
+        memory_namespace=state.get("memory_namespace", ""),
         from_agent="AppSec / Security",
         to_agent="Implementation Operator",
         artifact="AppSec Gate",
@@ -440,7 +445,7 @@ def appsec_node(state: SquadState):
 def product_node(state: SquadState):
     prompt = read_prompt("product.txt")
     discovery = state.get("discovery_output", "")
-    agent_context = format_agent_context("product")
+    agent_context = format_agent_context("product", state)
     run_id = state.get("run_id", "")
     cmo = cmo_block(
         state,
@@ -462,6 +467,7 @@ def product_node(state: SquadState):
 
     append_handoff(
         run_id=run_id,
+        memory_namespace=state.get("memory_namespace", ""),
         from_agent="Product Lead",
         to_agent="QA Planning",
         artifact="Product Brief",
@@ -512,6 +518,7 @@ def qa_planning_node(state: SquadState):
 
     append_handoff(
         run_id=run_id,
+        memory_namespace=state.get("memory_namespace", ""),
         from_agent="QA Planning",
         to_agent="Engineering Lead",
         artifact="QA Planning",
@@ -541,7 +548,7 @@ def engineering_node(state: SquadState):
     product = state.get("product_output", "")
     qa_plan = state.get("qa_plan_output", "")
     ux_ui = state.get("ux_ui_output", "")
-    agent_context = format_agent_context("engineering")
+    agent_context = format_agent_context("engineering", state)
     run_id = state.get("run_id", "")
     cmo = cmo_block(
         state,
@@ -566,6 +573,7 @@ def engineering_node(state: SquadState):
 
     append_handoff(
         run_id=run_id,
+        memory_namespace=state.get("memory_namespace", ""),
         from_agent="Engineering Lead",
         to_agent="Implementation Operator",
         artifact="Engineering Specification",
@@ -620,6 +628,7 @@ def operator_node(state: SquadState):
 
     append_handoff(
         run_id=run_id,
+        memory_namespace=state.get("memory_namespace", ""),
         from_agent="Implementation Operator",
         to_agent="Engineering Review",
         artifact="Implementation Package",
@@ -680,6 +689,7 @@ def engineering_review_node(state: SquadState):
 
     append_handoff(
         run_id=run_id,
+        memory_namespace=state.get("memory_namespace", ""),
         from_agent="Engineering Review",
         to_agent="QA Execution",
         artifact="Engineering Review",
@@ -712,7 +722,7 @@ def qa_execution_node(state: SquadState):
     privacy = state.get("privacy_output", "")
     appsec = state.get("appsec_output", "")
     validation = state.get("manual_validation_result", "")
-    agent_context = format_agent_context("qa_execution")
+    agent_context = format_agent_context("qa_execution", state)
     run_id = state.get("run_id", "")
     cmo = cmo_block(
         state,
@@ -740,6 +750,7 @@ def qa_execution_node(state: SquadState):
 
     append_handoff(
         run_id=run_id,
+        memory_namespace=state.get("memory_namespace", ""),
         from_agent="QA Execution",
         to_agent="CoS / Orchestrator",
         artifact="QA Execution Report",
@@ -778,7 +789,7 @@ def cos_node(state: SquadState):
     validation = state.get("manual_validation_result", "")
     run_id = state.get("run_id", "")
 
-    agent_context = format_agent_context("cos")
+    agent_context = format_agent_context("cos", state)
     cmo = cmo_block(
         state,
         "cos",
@@ -879,6 +890,7 @@ def cos_node(state: SquadState):
     # 7. Registrar parecer final do ciclo
     append_cycle_report(
         run_id=run_id,
+        memory_namespace=state.get("memory_namespace", ""),
         user_goal=state["user_goal"],
         cos_output=response.content,
         decision=decision,
@@ -889,6 +901,7 @@ def cos_node(state: SquadState):
     # 8. Registrar evento operacional de roteamento
     append_route_event(
         run_id=run_id,
+        memory_namespace=state.get("memory_namespace", ""),
         user_goal=state["user_goal"],
         route_summary=get_route_summary(route_state),
     )
@@ -904,6 +917,7 @@ def cos_node(state: SquadState):
 
         append_human_escalation(
             run_id=run_id,
+            memory_namespace=state.get("memory_namespace", ""),
             user_goal=state["user_goal"],
             reason=human_escalation_reason,
             required_decision=human_required_decision,
@@ -991,6 +1005,7 @@ def cos_node(state: SquadState):
 
     append_handoff(
         run_id=run_id,
+        memory_namespace=state.get("memory_namespace", ""),
         from_agent="CoS / Orchestrator",
         to_agent=handoff_to,
         artifact="CoS / Orchestrator Report",
@@ -1086,6 +1101,12 @@ def route_after_engineering_review(state: SquadState) -> str:
     return next_after_check(state, "engineering_review", "qa_execution")
 
 
+def route_after_cos(state: SquadState) -> str:
+    if state.get("route_decision") == "return_requested" and state.get("retry_allowed", False):
+        return state.get("retry_target", END)
+    return END
+
+
 builder = StateGraph(SquadState)
 
 builder.add_node("intake", intake_node)
@@ -1160,6 +1181,10 @@ builder.add_conditional_edges(
     ["cos"]
 )
 builder.add_edge("qa_execution", "cos")
-builder.add_edge("cos", END)
+builder.add_conditional_edges(
+    "cos",
+    route_after_cos,
+    ["product", "qa_planning", "engineering", "operator", END],
+)
 
 graph = builder.compile()
