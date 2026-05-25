@@ -162,9 +162,10 @@ Modo padrão: decision_critical
 QA Execution decide liberação. Deve receber Compact Memory e Decision Log.
 
 ### CoS
-Modo padrão: full_context quando acionado
+Modo padrão: decision_critical
 
-CoS entra para resolver ambiguidades, conflitos, escaladas e decisões estratégicas.
+CoS recebe Compact Memory e Decision Log no caminho normal para decidir sem
+inflar custo. `full_context` fica reservado para auditoria e debug.
 
 ---
 
@@ -187,4 +188,4 @@ Modo padrão atual da squad: `normal`
 
 Exceção:
 - QA Execution usa `decision_critical`
-- CoS, quando existir, usará `full_context`
+- CoS usa `decision_critical`; `full_context` apenas em auditoria/debug

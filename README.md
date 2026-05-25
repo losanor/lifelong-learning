@@ -34,6 +34,9 @@ Gates sob demanda:
 
 Camadas compartilhadas:
 
+- `docs/target_architecture.md`: stack alvo e roadmap da interface propria.
+- `app/project_scope.py`: namespace de projeto/iniciativa para memoria futura.
+- `app/execution_policy.py`: tiers, budgets e aprovacoes previstas.
 - `contracts.py`: CMO, Resumo Estruturado, Shared Memory e ECE.
 - `cmo_especializado.py`: factories de CMO para handoffs estruturados.
 - `app/intake.py`: politica de agentes fixos e sinais de especialistas sob demanda.
@@ -50,6 +53,11 @@ Privacy, AppSec, Writing e Data Scientist entram quando seus gatilhos existem.
 O intake registra esses sinais em `on_demand_agents`; Discovery ja e roteado no
 grafo por esse mecanismo. UX/UI, Privacy e AppSec agora tambem executam como
 gates reais apenas quando seus gatilhos forem detectados.
+
+Cada intake classifica a demanda em `quick`, `standard`, `full` ou
+`controlled`. Nesta etapa, budgets sao `advisory`: ficam persistidos e seguem
+para tracing/UI futura. Enforcement automatico entra com o Execution Engine e
+o fluxo HITL duravel.
 
 ## Execucao local
 
@@ -75,7 +83,8 @@ $env:USE_MOCK_MODEL="true"
 
 O runtime grava `data/squad_runtime.sqlite3` localmente. O banco nao entra no
 Git; ele serve para consultar volume, acionabilidade, C3, escaladas, duracao e
-resultados dos evals.
+resultados dos evals. Runs novos tambem registram `project_id`, `initiative_id`,
+namespace de memoria e tier/orcamento de execucao.
 
 Para iniciar uma baseline real rastreada, primeiro configure chaves somente em
 `.env` (nunca em `.env.example`) e rode um piloto de baixo custo:
@@ -144,6 +153,8 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
   para auditoria e debug.
 - O SQLite registra runs e artefatos estruturados sem depender de parsing de
   logs Markdown.
+- O intake cria namespace deterministico por projeto/iniciativa e persiste uma
+  politica de custo/aprovacao para a futura interface operacional.
 - Os evals cobrem feature, bugfix, documentacao, review, decisao, research,
   entrega com Discovery, entrega sensivel e review de seguranca; a meta minima
   de aceite e nota `8.7`.
@@ -159,6 +170,8 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
 - O `Workspace Context` informa refs e estado Git, mas nao executa alteracoes
   sozinho; implementation, docs e commits continuam dependendo do operador
   que aplicar o pacote operacional.
+- O namespace ja e registrado, mas os arquivos de memoria atuais ainda
+  precisam ser migrados para armazenamento particionado por iniciativa.
 - Validacao automatica de performance do modelo depende do provedor real,
   latencia de rede, tamanho de contexto e volume dos logs compactados.
 - A bateria inicial usa o mock para medir arquitetura e contratos; a proxima

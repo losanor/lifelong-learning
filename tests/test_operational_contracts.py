@@ -7,6 +7,7 @@ import app.graph as graph_module
 from app.evals import EvalScenario, assess_scenario
 from app.mock_model import MockResponse
 from app.observability import build_run_config
+from app.project_scope import resolve_work_scope
 from app.operational_store import (
     baseline_snapshot,
     metrics_snapshot,
@@ -127,7 +128,16 @@ class OperationalContractsTest(unittest.TestCase):
                 "writing",
             )
             result = {
+                "work_scope": {
+                    "project_id": "squad",
+                    "initiative_id": "docs-update",
+                    "memory_namespace": "squad:docs-update",
+                },
                 "active_flow": "docs",
+                "execution_policy": {
+                    "execution_tier": "quick",
+                    "max_cost_usd": 0.15,
+                },
                 "route_status": "ended",
                 "cos_decision": "GO",
                 "cos_route_action": "END_CYCLE",
@@ -151,6 +161,10 @@ class OperationalContractsTest(unittest.TestCase):
                     "SELECT repair_attempted FROM agent_outputs WHERE run_id=? AND agent_name=?",
                     ("unit_run", "writing"),
                 ).fetchone()[0]
+                stored_scope = connection.execute(
+                    "SELECT project_id, initiative_id, execution_tier FROM runs WHERE run_id=?",
+                    ("unit_run",),
+                ).fetchone()
             finally:
                 connection.close()
 
@@ -158,6 +172,7 @@ class OperationalContractsTest(unittest.TestCase):
             self.assertEqual(metrics["execution_ready_rate"], 1.0)
             self.assertEqual(metrics["average_agents_per_run"], 1.0)
             self.assertEqual(stored_repair, 1)
+            self.assertEqual(stored_scope, ("squad", "docs-update", "quick"))
         finally:
             if db_path.exists():
                 db_path.unlink()
@@ -357,6 +372,14 @@ class OperationalContractsTest(unittest.TestCase):
         self.assertEqual(decision.active_flow, "research_only")
         self.assertIn("discovery", decision.on_demand_agents)
 
+    def test_intake_budgets_docs_as_quick_with_writing_in_plan(self):
+        decision = decide_intake("Documentar o README da arquitetura.")
+
+        self.assertEqual(decision.execution_policy["execution_tier"], "quick")
+        self.assertEqual(decision.execution_policy["planned_agents"], ["writing", "cos"])
+        self.assertEqual(decision.execution_policy["planned_agent_count"], 2)
+        self.assertNotIn("ux_ui", decision.on_demand_agents)
+
     def test_intake_selects_operational_flows(self):
         self.assertEqual(
             decide_intake("Corrigir bug no login e validar a falha.").active_flow,
@@ -388,19 +411,38 @@ class OperationalContractsTest(unittest.TestCase):
         self.assertIn("ux_ui", decision.on_demand_agents)
         self.assertIn("privacy", decision.on_demand_agents)
         self.assertIn("appsec", decision.on_demand_agents)
+        self.assertEqual(decision.execution_policy["execution_tier"], "controlled")
+        self.assertIn("write_files", decision.execution_policy["approval_required_actions"])
 
     def test_langsmith_config_tags_specialist_gates(self):
+        policy = decide_intake(
+            "Criar interface de cadastro de paciente com dados pessoais e autenticacao."
+        ).execution_policy
         config = build_run_config(
             run_id="run_observe",
             active_flow="delivery_core",
             on_demand_agents=("privacy", "appsec"),
             git_repo=True,
+            project_id="health-app",
+            initiative_id="patient-signup",
+            execution_policy=policy,
         )
 
         self.assertIn("gate:privacy", config["tags"])
         self.assertIn("gate:appsec", config["tags"])
         self.assertEqual(config["metadata"]["gate_count"], 2)
         self.assertTrue(config["metadata"]["git_repo"])
+        self.assertIn("tier:controlled", config["tags"])
+        self.assertEqual(config["metadata"]["project_id"], "health-app")
+        self.assertEqual(config["metadata"]["initiative_id"], "patient-signup")
+        self.assertEqual(config["metadata"]["execution_tier"], "controlled")
+
+    def test_work_scope_creates_isolated_memory_namespace(self):
+        scope = resolve_work_scope(".", project_id="Client Portal", initiative_id="CSV Export V1")
+
+        self.assertEqual(scope.project_id, "client-portal")
+        self.assertEqual(scope.initiative_id, "csv-export-v1")
+        self.assertEqual(scope.memory_namespace, "client-portal:csv-export-v1")
 
     def test_review_intake_signals_appsec_without_delivery_flow(self):
         decision = decide_intake("Fazer code review de autenticacao e permissoes do login.")

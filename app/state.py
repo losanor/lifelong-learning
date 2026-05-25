@@ -10,6 +10,11 @@ class SquadState(TypedDict, total=False):
     intake_rationale: str
     fixed_agents: list[str]
     on_demand_agents: list[str]
+    execution_policy: dict
+    work_scope: dict
+    project_id: str
+    initiative_id: str
+    memory_namespace: str
 
     context_mode: str
     context_policy: str

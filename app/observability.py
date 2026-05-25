@@ -21,6 +21,9 @@ def build_run_config(
     mode: str = "runtime",
     on_demand_agents: list[str] | tuple[str, ...] = (),
     git_repo: bool | None = None,
+    project_id: str = "",
+    initiative_id: str = "",
+    execution_policy: dict | None = None,
     trace_id: UUID | None = None,
 ) -> dict:
     """Anexa metadata/tags consumidas pelo tracing do LangGraph/LangSmith."""
@@ -29,6 +32,10 @@ def build_run_config(
         tags.append(active_flow)
     tags.extend(f"gate:{agent}" for agent in on_demand_agents)
 
+    policy = execution_policy or {}
+    execution_tier = policy.get("execution_tier", "")
+    if execution_tier:
+        tags.append(f"tier:{execution_tier}")
     config = {
         "run_name": f"squad:{run_id}",
         "tags": tags,
@@ -38,6 +45,13 @@ def build_run_config(
             "on_demand_agents": list(on_demand_agents),
             "gate_count": len(on_demand_agents),
             "git_repo": git_repo,
+            "project_id": project_id,
+            "initiative_id": initiative_id,
+            "execution_tier": execution_tier,
+            "budget_enforcement": policy.get("enforcement_mode", ""),
+            "max_cost_usd": policy.get("max_cost_usd"),
+            "max_duration_seconds": policy.get("max_duration_seconds"),
+            "planned_agent_count": policy.get("planned_agent_count"),
             "structured_output": True,
             "langsmith_enabled": langsmith_enabled(),
             "langsmith_ready": langsmith_ready(),

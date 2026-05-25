@@ -9,6 +9,7 @@ from app.observability import build_run_config
 from app.operational_store import metrics_snapshot, record_run
 from app.intake import decide_intake
 from app.workspace_context import capture_workspace_context
+from app.project_scope import resolve_work_scope
 
 import sys
 from time import perf_counter
@@ -60,12 +61,15 @@ Ressalva opcional:
     context_bundle = build_context_bundle(mode="normal")
     preflight_intake = decide_intake(user_goal)
     preflight_workspace = capture_workspace_context(".")
+    preflight_scope = resolve_work_scope(".")
 
     started_at = perf_counter()
     result = graph.invoke({
         "run_id": run_id,
         "user_goal": user_goal,
         "workspace_root": ".",
+        **preflight_scope.as_state(),
+        "work_scope": preflight_scope.as_state(),
         "context_mode": context_bundle["context_mode"],
         "context_policy": context_bundle["context_policy"],
         "retry_policy": context_bundle["retry_policy"],
@@ -88,6 +92,9 @@ Ressalva opcional:
         active_flow=preflight_intake.active_flow,
         on_demand_agents=preflight_intake.on_demand_agents,
         git_repo=preflight_workspace.git_repo,
+        project_id=preflight_scope.project_id,
+        initiative_id=preflight_scope.initiative_id,
+        execution_policy=preflight_intake.execution_policy,
     ))
     duration_ms = round((perf_counter() - started_at) * 1000)
 

@@ -28,6 +28,7 @@ from app.structured_output import (
 )
 from app.intake import decide_intake
 from app.workspace_context import capture_workspace_context, format_workspace_context
+from app.project_scope import resolve_work_scope
 from app.human_escalation import (
     append_human_escalation,
     should_create_human_escalation,
@@ -116,6 +117,19 @@ def workspace_context_block(state: SquadState) -> str:
     return f"Workspace Context:\n{format_workspace_context(state.get('workspace_context'))}\n\n"
 
 
+def execution_policy_block(state: SquadState) -> str:
+    policy = state.get("execution_policy", {})
+    approvals = ", ".join(policy.get("approval_required_actions", [])) or "none"
+    return (
+        "Execution Policy:\n"
+        f"Tier: {policy.get('execution_tier', 'unclassified')}; "
+        f"enforcement: {policy.get('enforcement_mode', 'advisory')}; "
+        f"max cost USD: {policy.get('max_cost_usd', 'n/a')}; "
+        f"max duration seconds: {policy.get('max_duration_seconds', 'n/a')}.\n"
+        f"Approval required for: {approvals}.\n\n"
+    )
+
+
 def cmo_block(
     state: SquadState,
     agent_name: str,
@@ -171,6 +185,10 @@ def build_operational_packet(
     artifacts = sorted({*state.get("structured_outputs", {}).keys(), "cos"})
     return {
         "active_flow": state.get("active_flow", ""),
+        "project_id": state.get("project_id", ""),
+        "initiative_id": state.get("initiative_id", ""),
+        "memory_namespace": state.get("memory_namespace", ""),
+        "execution_policy": state.get("execution_policy", {}),
         "decision": decision,
         "route_action": route_action,
         "workspace_root": workspace.get("root", ""),
@@ -203,8 +221,15 @@ def intake_node(state: SquadState):
         active_flow_override=state.get("active_flow"),
     ).as_state()
     context = capture_workspace_context(state.get("workspace_root"))
+    scope = resolve_work_scope(
+        context.root,
+        project_id=state.get("project_id"),
+        initiative_id=state.get("initiative_id"),
+    )
     return {
         **intake,
+        **scope.as_state(),
+        "work_scope": scope.as_state(),
         "workspace_root": context.root,
         "workspace_context": context.as_state(),
     }
@@ -771,6 +796,7 @@ def cos_node(state: SquadState):
         f"Justificativa do intake:\n{state.get('intake_rationale', '')}\n\n"
         "Artefatos ausentes podem ser esperados em fluxos curtos como docs, review, research_only, decision_only e bugfix.\n\n"
         f"{workspace_context_block(state)}"
+        f"{execution_policy_block(state)}"
         f"{agent_context}"
         f"Product Brief:\n{product}\n\n"
         f"QA Planning:\n{qa_plan}\n\n"

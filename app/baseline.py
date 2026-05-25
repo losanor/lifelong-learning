@@ -24,6 +24,7 @@ from app.operational_store import (
 from app.retry_policy import initialize_retry_state
 from app.run_registry import generate_run_id
 from app.workspace_context import capture_workspace_context
+from app.project_scope import resolve_work_scope
 
 
 @dataclass(frozen=True)
@@ -118,11 +119,14 @@ BASELINE_CASES = (
 )
 
 
-def _state(case: BaselineCase, run_id: str, workspace_root: str | Path) -> dict:
+def _state(case: BaselineCase, run_id: str, workspace_root: str | Path, baseline_id: str) -> dict:
+    scope = resolve_work_scope(workspace_root, initiative_id=baseline_id)
     return {
         "run_id": run_id,
         "user_goal": case.scenario.user_goal,
         "workspace_root": str(workspace_root),
+        **scope.as_state(),
+        "work_scope": scope.as_state(),
         "manual_validation_result": "Baseline real: QA deve declarar limitacoes se nao houver build executado.",
         "retry_count": 0,
         "max_retries": 2,
@@ -160,6 +164,7 @@ def run_baseline(
 
     baseline_id = f"baseline_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
     workspace = capture_workspace_context(workspace_root)
+    scope = resolve_work_scope(workspace_root, initiative_id=baseline_id)
     reports: list[dict] = []
 
     for case in BASELINE_CASES[:limit]:
@@ -169,13 +174,16 @@ def run_baseline(
         started_at = perf_counter()
         try:
             result = graph.invoke(
-                _state(case, run_id, workspace_root),
+                _state(case, run_id, workspace_root, baseline_id),
                 config=build_run_config(
                     run_id=run_id,
                     active_flow=intake.active_flow,
                     mode="baseline-real",
                     on_demand_agents=intake.on_demand_agents,
                     git_repo=workspace.git_repo,
+                    project_id=scope.project_id,
+                    initiative_id=scope.initiative_id,
+                    execution_policy=intake.execution_policy,
                     trace_id=trace_id,
                 ),
             )

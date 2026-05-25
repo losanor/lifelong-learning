@@ -40,8 +40,13 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
             CREATE TABLE IF NOT EXISTS runs (
                 run_id TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
+                project_id TEXT NOT NULL DEFAULT '',
+                initiative_id TEXT NOT NULL DEFAULT '',
+                memory_namespace TEXT NOT NULL DEFAULT '',
                 user_goal TEXT NOT NULL,
                 active_flow TEXT NOT NULL,
+                execution_tier TEXT NOT NULL DEFAULT '',
+                execution_policy_json TEXT NOT NULL DEFAULT '{}',
                 status TEXT NOT NULL,
                 cos_decision TEXT,
                 route_action TEXT,
@@ -124,6 +129,22 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
             connection.execute(
                 "ALTER TABLE agent_outputs ADD COLUMN repair_attempted INTEGER NOT NULL DEFAULT 0"
             )
+        run_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        run_migrations = {
+            "project_id": "TEXT NOT NULL DEFAULT ''",
+            "initiative_id": "TEXT NOT NULL DEFAULT ''",
+            "memory_namespace": "TEXT NOT NULL DEFAULT ''",
+            "execution_tier": "TEXT NOT NULL DEFAULT ''",
+            "execution_policy_json": "TEXT NOT NULL DEFAULT '{}'",
+        }
+        for column_name, column_type in run_migrations.items():
+            if column_name not in run_columns:
+                connection.execute(
+                    f"ALTER TABLE runs ADD COLUMN {column_name} {column_type}"
+                )
 
 
 def record_run(
@@ -137,6 +158,8 @@ def record_run(
     initialize_schema(db_path)
     outputs = result.get("structured_outputs", {})
     checks = result.get("orchestrator_checks", {})
+    scope = result.get("work_scope", {})
+    policy = result.get("execution_policy", {})
     c3_count = sum(
         1 for output in outputs.values()
         if output.get("summary", {}).get("ece") == "C3"
@@ -147,13 +170,20 @@ def record_run(
         connection.execute(
             """
             INSERT INTO runs (
-                run_id, created_at, user_goal, active_flow, status, cos_decision,
+                run_id, created_at, project_id, initiative_id, memory_namespace,
+                user_goal, active_flow, execution_tier, execution_policy_json,
+                status, cos_decision,
                 route_action, route_decision, human_escalation_created,
                 execution_ready, agent_count, c3_count, duration_ms,
                 operational_packet_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id) DO UPDATE SET
+                project_id=excluded.project_id,
+                initiative_id=excluded.initiative_id,
+                memory_namespace=excluded.memory_namespace,
                 active_flow=excluded.active_flow,
+                execution_tier=excluded.execution_tier,
+                execution_policy_json=excluded.execution_policy_json,
                 status=excluded.status,
                 cos_decision=excluded.cos_decision,
                 route_action=excluded.route_action,
@@ -168,8 +198,13 @@ def record_run(
             (
                 run_id,
                 datetime.now(timezone.utc).isoformat(),
+                scope.get("project_id", result.get("project_id", "")),
+                scope.get("initiative_id", result.get("initiative_id", "")),
+                scope.get("memory_namespace", result.get("memory_namespace", "")),
                 user_goal,
                 result.get("active_flow", ""),
+                policy.get("execution_tier", ""),
+                json.dumps(policy, ensure_ascii=False),
                 result.get("route_status", "unknown"),
                 result.get("cos_decision", ""),
                 result.get("cos_route_action", ""),
@@ -364,6 +399,14 @@ def metrics_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
             ORDER BY run_count DESC, active_flow ASC
             """
         ).fetchall()
+        tier_rows = connection.execute(
+            """
+            SELECT execution_tier, COUNT(*) AS run_count, AVG(duration_ms) AS average_duration_ms
+            FROM runs
+            GROUP BY execution_tier
+            ORDER BY run_count DESC, execution_tier ASC
+            """
+        ).fetchall()
 
     run_count = totals["run_count"]
     return {
@@ -380,6 +423,14 @@ def metrics_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
                 "average_agents": round(row["average_agents"], 2),
             }
             for row in flow_rows
+        ],
+        "execution_tiers": [
+            {
+                "execution_tier": row["execution_tier"] or "legacy",
+                "run_count": row["run_count"],
+                "average_duration_ms": round(row["average_duration_ms"] or 0, 2),
+            }
+            for row in tier_rows
         ],
     }
 

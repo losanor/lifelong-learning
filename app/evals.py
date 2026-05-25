@@ -14,6 +14,7 @@ from app.operational_store import DEFAULT_DB_PATH, metrics_snapshot, record_eval
 from app.retry_policy import initialize_retry_state
 from app.run_registry import generate_run_id
 from app.intake import decide_intake
+from app.project_scope import resolve_work_scope
 
 
 @dataclass(frozen=True)
@@ -93,11 +94,19 @@ SCENARIOS = (
 )
 
 
-def _initial_state(scenario: EvalScenario, run_id: str, workspace_root: str | Path) -> dict[str, Any]:
+def _initial_state(
+    scenario: EvalScenario,
+    run_id: str,
+    workspace_root: str | Path,
+    initiative_id: str | None = None,
+) -> dict[str, Any]:
+    scope = resolve_work_scope(workspace_root, initiative_id=initiative_id or f"eval-{scenario.scenario_id}")
     return {
         "run_id": run_id,
         "user_goal": scenario.user_goal,
         "workspace_root": str(workspace_root),
+        **scope.as_state(),
+        "work_scope": scope.as_state(),
         "manual_validation_result": "Validacao mock concluida para eval deterministica.",
         "retry_count": 0,
         "max_retries": 2,
@@ -182,18 +191,22 @@ def run_evaluation(
 
     evaluation_id = f"eval_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
     scenario_results: list[dict[str, Any]] = []
+    scope = resolve_work_scope(workspace_root, initiative_id=f"eval-{evaluation_id}")
 
     for scenario in SCENARIOS:
         run_id = generate_run_id()
         preflight = decide_intake(scenario.user_goal)
         started_at = perf_counter()
         result = graph.invoke(
-            _initial_state(scenario, run_id, workspace_root),
+            _initial_state(scenario, run_id, workspace_root, scope.initiative_id),
             config=build_run_config(
                 run_id=run_id,
                 active_flow=scenario.expected_flow,
                 mode="eval",
                 on_demand_agents=preflight.on_demand_agents,
+                project_id=scope.project_id,
+                initiative_id=scope.initiative_id,
+                execution_policy=preflight.execution_policy,
             ),
         )
         duration_ms = round((perf_counter() - started_at) * 1000)

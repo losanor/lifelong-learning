@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
+from app.execution_policy import build_execution_policy
 
 FIXED_DELIVERY_AGENTS = (
     "product",
@@ -65,6 +67,7 @@ class IntakeDecision:
     fixed_agents: tuple[str, ...]
     on_demand_agents: tuple[str, ...]
     rationale: str
+    execution_policy: dict
 
     def as_state(self) -> dict:
         return {
@@ -73,11 +76,15 @@ class IntakeDecision:
             "fixed_agents": list(self.fixed_agents),
             "on_demand_agents": list(self.on_demand_agents),
             "intake_rationale": self.rationale,
+            "execution_policy": self.execution_policy,
         }
 
 
 def _matches(text: str, triggers: tuple[str, ...]) -> bool:
-    return any(trigger in text for trigger in triggers)
+    return any(
+        re.search(rf"(?<!\w){re.escape(trigger)}(?!\w)", text) is not None
+        for trigger in triggers
+    )
 
 
 def decide_intake(
@@ -124,12 +131,18 @@ def decide_intake(
     if triggered:
         rationale = f"{rationale} Sob demanda sinalizados: {', '.join(triggered)}."
 
+    fixed_agents = tuple(agent for agent in FLOW_AGENTS[flow] if agent not in ON_DEMAND_AGENTS)
     return IntakeDecision(
         active_flow=flow,
         needs_discovery=needs_discovery,
-        fixed_agents=tuple(agent for agent in FLOW_AGENTS[flow] if agent not in ON_DEMAND_AGENTS),
+        fixed_agents=fixed_agents,
         on_demand_agents=triggered,
         rationale=rationale,
+        execution_policy=build_execution_policy(
+            flow,
+            fixed_agents=FLOW_AGENTS[flow],
+            on_demand_agents=triggered,
+        ),
     )
 
 
