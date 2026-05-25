@@ -77,6 +77,26 @@ O runtime grava `data/squad_runtime.sqlite3` localmente. O banco nao entra no
 Git; ele serve para consultar volume, acionabilidade, C3, escaladas, duracao e
 resultados dos evals.
 
+Para iniciar uma baseline real rastreada, primeiro configure chaves somente em
+`.env` (nunca em `.env.example`) e rode um piloto de baixo custo:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.baseline --limit 3
+```
+
+Depois de avaliar os tres traces e custos no LangSmith, rode a bateria completa:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.baseline --full
+```
+
+Cada caso gera um foco de revisao humana. Registre as cinco notas de `0` a `10`
+com:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.review_baseline <baseline_id> <scenario_id> --correctness 9 --practical-utility 9 --scope-control 9 --next-step-clarity 9 --execution-confidence 9 --notes "Aprovado."
+```
+
 ## Observabilidade
 
 LangSmith e o caminho recomendado para tracing e avaliacao do grafo. Copie os
@@ -84,6 +104,8 @@ campos de `.env.example` para `.env`, defina `LANGSMITH_TRACING=true`,
 `LANGSMITH_API_KEY` e `LANGSMITH_PROJECT`. O runtime injeta `run_id`, fluxo
 ativo, estado Git e tags `gate:<agente>` em cada execucao via
 `app/observability.py`.
+Na baseline real, o runtime tambem publica `baseline_auto_score` como feedback
+automatico do trace; a rubrica humana permanece no SQLite local.
 
 Use Markdown/logs locais como trilha operacional simples e LangSmith para
 traces, comparacao de execucoes, monitoramento e evals. Depois de medir volume,

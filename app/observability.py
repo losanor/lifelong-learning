@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from uuid import UUID
 
 
 def langsmith_enabled() -> bool:
@@ -20,6 +21,7 @@ def build_run_config(
     mode: str = "runtime",
     on_demand_agents: list[str] | tuple[str, ...] = (),
     git_repo: bool | None = None,
+    trace_id: UUID | None = None,
 ) -> dict:
     """Anexa metadata/tags consumidas pelo tracing do LangGraph/LangSmith."""
     tags = ["squad-v5-lite", mode]
@@ -27,7 +29,7 @@ def build_run_config(
         tags.append(active_flow)
     tags.extend(f"gate:{agent}" for agent in on_demand_agents)
 
-    return {
+    config = {
         "run_name": f"squad:{run_id}",
         "tags": tags,
         "metadata": {
@@ -41,3 +43,27 @@ def build_run_config(
             "langsmith_ready": langsmith_ready(),
         },
     }
+    if trace_id is not None:
+        config["run_id"] = trace_id
+    return config
+
+
+def publish_automatic_feedback(
+    *,
+    trace_id: UUID,
+    score: float,
+    comment: str,
+) -> bool:
+    """Publica feedback no LangSmith somente quando tracing e chave existem."""
+    if not langsmith_ready():
+        return False
+
+    from langsmith import Client
+
+    Client().create_feedback(
+        key="baseline_auto_score",
+        score=score,
+        trace_id=trace_id,
+        comment=comment,
+    )
+    return True

@@ -12,3 +12,4 @@ data/run_registry.md
 data/run_output*.md
 data/*.sqlite3
 data/eval_report*.json
+data/baseline_report*.json

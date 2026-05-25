@@ -3,7 +3,13 @@ from pathlib import Path
 
 from app.evals import EvalScenario, assess_scenario
 from app.observability import build_run_config
-from app.operational_store import metrics_snapshot, record_run
+from app.operational_store import (
+    baseline_snapshot,
+    metrics_snapshot,
+    record_baseline_result,
+    record_run,
+    update_human_review,
+)
 from app.orchestrator import inspect_agent_output, update_orchestrator_checks
 from app.retry_policy import initialize_retry_state, resolve_retry_permission
 from app.structured_output import CoSOutputEnvelope, mock_agent_output, safe_parse_agent_output
@@ -130,6 +136,39 @@ class OperationalContractsTest(unittest.TestCase):
 
         self.assertEqual(score, 10.0)
         self.assertFalse(findings)
+
+    def test_baseline_review_stores_human_rubric(self):
+        db_path = Path("data") / "test_baseline.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        try:
+            record_baseline_result(
+                baseline_id="baseline_unit",
+                scenario_id="case_unit",
+                run_id="run_unit",
+                trace_id="trace_unit",
+                automatic_score=9.2,
+                findings=[],
+                db_path=db_path,
+            )
+            update_human_review(
+                baseline_id="baseline_unit",
+                scenario_id="case_unit",
+                correctness=9,
+                practical_utility=8,
+                scope_control=10,
+                next_step_clarity=9,
+                execution_confidence=8,
+                notes="Aprovado com pequena ressalva.",
+                db_path=db_path,
+            )
+            report = baseline_snapshot("baseline_unit", db_path)
+
+            self.assertEqual(report["scenario_count"], 1)
+            self.assertEqual(report["results"][0]["human_average_score"], 8.8)
+        finally:
+            if db_path.exists():
+                db_path.unlink()
 
     def test_operator_cmo_rejects_c3_spec(self):
         memoria = SharedMemory(

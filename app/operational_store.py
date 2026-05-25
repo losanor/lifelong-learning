@@ -77,6 +77,23 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 findings_json TEXT NOT NULL,
                 PRIMARY KEY (evaluation_id, scenario_id)
             );
+
+            CREATE TABLE IF NOT EXISTS baseline_reviews (
+                baseline_id TEXT NOT NULL,
+                scenario_id TEXT NOT NULL,
+                executed_at TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                trace_id TEXT,
+                automatic_score REAL NOT NULL,
+                automatic_findings_json TEXT NOT NULL,
+                human_correctness REAL,
+                human_practical_utility REAL,
+                human_scope_control REAL,
+                human_next_step_clarity REAL,
+                human_execution_confidence REAL,
+                human_notes TEXT,
+                PRIMARY KEY (baseline_id, scenario_id)
+            );
             """
         )
 
@@ -205,6 +222,86 @@ def record_eval_result(
         )
 
 
+def record_baseline_result(
+    *,
+    baseline_id: str,
+    scenario_id: str,
+    run_id: str,
+    trace_id: str,
+    automatic_score: float,
+    findings: list[str],
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> None:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO baseline_reviews (
+                baseline_id, scenario_id, executed_at, run_id, trace_id,
+                automatic_score, automatic_findings_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(baseline_id, scenario_id) DO UPDATE SET
+                executed_at=excluded.executed_at,
+                run_id=excluded.run_id,
+                trace_id=excluded.trace_id,
+                automatic_score=excluded.automatic_score,
+                automatic_findings_json=excluded.automatic_findings_json
+            """,
+            (
+                baseline_id,
+                scenario_id,
+                datetime.now(timezone.utc).isoformat(),
+                run_id,
+                trace_id,
+                automatic_score,
+                json.dumps(findings, ensure_ascii=False),
+            ),
+        )
+
+
+def update_human_review(
+    *,
+    baseline_id: str,
+    scenario_id: str,
+    correctness: float,
+    practical_utility: float,
+    scope_control: float,
+    next_step_clarity: float,
+    execution_confidence: float,
+    notes: str = "",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> None:
+    initialize_schema(db_path)
+    scores = (correctness, practical_utility, scope_control, next_step_clarity, execution_confidence)
+    if any(score < 0 or score > 10 for score in scores):
+        raise ValueError("Human review scores must be between 0 and 10.")
+    with _connection(db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE baseline_reviews SET
+                human_correctness=?,
+                human_practical_utility=?,
+                human_scope_control=?,
+                human_next_step_clarity=?,
+                human_execution_confidence=?,
+                human_notes=?
+            WHERE baseline_id=? AND scenario_id=?
+            """,
+            (
+                correctness,
+                practical_utility,
+                scope_control,
+                next_step_clarity,
+                execution_confidence,
+                notes,
+                baseline_id,
+                scenario_id,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise ValueError("Baseline scenario not found for human review.")
+
+
 def metrics_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
     initialize_schema(db_path)
     with _connection(db_path) as connection:
@@ -245,4 +342,37 @@ def metrics_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
             }
             for row in flow_rows
         ],
+    }
+
+
+def baseline_snapshot(baseline_id: str, db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM baseline_reviews
+            WHERE baseline_id=?
+            ORDER BY scenario_id
+            """,
+            (baseline_id,),
+        ).fetchall()
+    results = [dict(row) for row in rows]
+    for result in results:
+        result["automatic_findings"] = json.loads(result.pop("automatic_findings_json"))
+        human_scores = [
+            result["human_correctness"],
+            result["human_practical_utility"],
+            result["human_scope_control"],
+            result["human_next_step_clarity"],
+            result["human_execution_confidence"],
+        ]
+        result["human_average_score"] = (
+            round(sum(human_scores) / len(human_scores), 2)
+            if all(score is not None for score in human_scores)
+            else None
+        )
+    return {
+        "baseline_id": baseline_id,
+        "scenario_count": len(results),
+        "results": results,
     }
