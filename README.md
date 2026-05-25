@@ -93,7 +93,9 @@ ficam em `not_actionable`. A primeira aprovacao permite preparar um diff
 candidato, que precisa afetar somente `target_refs` declarados e passar em
 `git apply --check`. Um patch valido fica em `awaiting_apply_approval`; a
 segunda aprovacao o move para `approved_for_apply`, ainda sem escrever no
-workspace. Aplicacao real sera habilitada somente no proximo incremento.
+workspace. O comando `apply` aplica somente esse patch aprovado, executa
+validacoes allowlisted e reverte automaticamente a alteracao se alguma falhar.
+Commit e push permanecem manuais.
 
 Para consultar e decidir a fila local:
 
@@ -102,6 +104,8 @@ Para consultar e decidir a fila local:
 .\.venv\Scripts\python.exe -m app.review_execution approve <request_id> --by owner --notes "Preparar diff."
 .\.venv\Scripts\python.exe -m app.review_execution prepare <request_id> --patch-file .\candidate.patch
 .\.venv\Scripts\python.exe -m app.review_execution approve-apply <request_id> --by owner --notes "Patch validado."
+.\.venv\Scripts\python.exe -m app.review_execution apply <request_id> --validate git_diff_check --validate python_compile
+.\.venv\Scripts\python.exe -m app.review_execution rollback <request_id> --reason "Cancelar entrega."
 .\.venv\Scripts\python.exe -m app.review_execution reject <request_id> --by owner --notes "Revisar escopo."
 ```
 
@@ -173,8 +177,7 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
 - O SQLite registra runs e artefatos estruturados sem depender de parsing de
   logs Markdown.
 - O Execution Engine registra pedidos, diffs candidatos, validacao de
-  aplicabilidade e decisoes humanas, sempre sem efeitos no workspace enquanto
-  a aplicacao controlada ainda nao estiver implementada.
+  aplicabilidade, aplicacao controlada, validacoes allowlisted e rollback.
 - O intake cria namespace deterministico por projeto/iniciativa e persiste uma
   politica de custo/aprovacao para a futura interface operacional.
 - Os evals cobrem feature, bugfix, documentacao, review, decisao, research,
@@ -192,9 +195,8 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
 - O `Workspace Context` informa refs e estado Git, mas nao executa alteracoes
   sozinho; implementation, docs e commits continuam dependendo do operador
   que aplicar o pacote operacional.
-- As aprovacoes atuais auditam intencao e patch validado; escrita controlada e
-  execucao de testes sobre a alteracao aplicada pertencem ao proximo incremento
-  do Execution Engine.
+- A aplicacao controlada ainda nao cria commits ou publica branches; esses
+  efeitos Git seguem como operacao deliberada apos revisar evidencias.
 - O namespace ja e registrado, mas os arquivos de memoria atuais ainda
   precisam ser migrados para armazenamento particionado por iniciativa.
 - Validacao automatica de performance do modelo depende do provedor real,

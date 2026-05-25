@@ -41,9 +41,9 @@ Primeiras telas previstas:
 - Approval gate que impede efeitos antes da decisao. (implementado)
 - Validacao de diff candidato contra alvos autorizados e `git apply --check`. (implementado)
 - Segundo checkpoint humano antes de futura aplicacao do patch. (implementado)
-- Escrita controlada no workspace.
-- Validacao automatica, diff e evidencias.
-- Matriz executavel de autorizacoes.
+- Escrita controlada no workspace com rollback. (implementado)
+- Validacao automatica allowlisted, diff e evidencias. (implementado)
+- Matriz executavel de autorizacoes. (implementado)
 
 ### M3 - Durable HITL
 

@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 import re
 import subprocess
+import sys
 from typing import Any
 
 from app.operational_store import (
@@ -13,6 +14,7 @@ from app.operational_store import (
     execution_request_snapshot,
     record_apply_decision,
     record_execution_decision,
+    record_execution_application,
     record_execution_preparation,
     record_execution_request,
 )
@@ -24,7 +26,15 @@ NOT_ACTIONABLE = "not_actionable"
 APPROVED_FOR_DRY_RUN = "approved_for_dry_run"
 AWAITING_PATCH = "awaiting_patch"
 AWAITING_APPLY_APPROVAL = "awaiting_apply_approval"
+APPROVED_FOR_APPLY = "approved_for_apply"
+APPLIED_VALIDATED = "applied_validated"
+ROLLED_BACK = "rolled_back"
 MAX_PATCH_BYTES = 1_000_000
+VALIDATION_PRESETS = {
+    "git_diff_check": ["git", "diff", "--check"],
+    "python_compile": [sys.executable, "-m", "compileall", "app", "tests"],
+    "unit_tests": [sys.executable, "-m", "unittest", "tests.test_operational_contracts", "-v"],
+}
 
 
 def _normalize_relative_ref(ref: str) -> str | None:
@@ -263,6 +273,209 @@ def decide_apply_execution(
         decision=decision,
         decided_by=decided_by,
         notes=notes,
+        db_path=db_path,
+    )
+
+
+def _run_command(command: list[str], *, workspace_root: Path, timeout: int = 120) -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=workspace_root,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=timeout,
+        )
+        output = (completed.stdout + completed.stderr).strip()
+        return {
+            "command": command,
+            "passed": completed.returncode == 0,
+            "return_code": completed.returncode,
+            "output": output[-2000:],
+        }
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as error:
+        return {
+            "command": command,
+            "passed": False,
+            "return_code": None,
+            "output": str(error),
+        }
+
+
+def _apply_patch_bytes(
+    patch_text: str,
+    *,
+    workspace_root: Path,
+    reverse: bool = False,
+) -> dict[str, Any]:
+    command = ["git", "apply"]
+    if reverse:
+        command.append("--reverse")
+    command.extend(["--recount", "-"])
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=workspace_root,
+            input=patch_text.encode("utf-8"),
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+        output = (completed.stderr or completed.stdout).decode(
+            "utf-8", errors="replace"
+        ).strip()
+        return {"passed": completed.returncode == 0, "details": output[:1000]}
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as error:
+        return {"passed": False, "details": str(error)}
+
+
+def apply_execution_request(
+    request_id: str,
+    *,
+    workspace_root: str | Path = ".",
+    validations: list[str] | None = None,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    snapshot = execution_request_snapshot(request_id=request_id, db_path=db_path)
+    if not snapshot["requests"]:
+        raise ValueError("Execution request not found.")
+    request = snapshot["requests"][0]
+    if request["status"] != APPROVED_FOR_APPLY:
+        raise ValueError("A validated patch requires apply approval before execution.")
+    preparation = request.get("preparation")
+    if not preparation or not preparation.get("validation", {}).get("passed"):
+        raise ValueError("No validated candidate patch is available.")
+    root = Path(workspace_root).resolve()
+    if str(root) != preparation["workspace_root"]:
+        raise ValueError("Workspace root differs from the prepared execution workspace.")
+    patch_text = preparation["patch_text"]
+    patch_digest = hashlib.sha256(patch_text.encode("utf-8")).hexdigest()
+    if patch_digest != preparation["patch_sha256"]:
+        raise ValueError("Candidate patch digest does not match the approved preparation.")
+    target_evidence, allowed_refs = _workspace_target_evidence(
+        request["target_refs"], workspace_root=root
+    )
+    revalidation = _validate_patch(patch_text, workspace_root=root, allowed_refs=allowed_refs)
+    if not revalidation["passed"]:
+        return record_execution_application(
+            {
+                "request_id": request_id,
+                "request_status": AWAITING_PATCH,
+                "status_reason": "Approved patch is no longer applicable; submit a new candidate diff.",
+                "application_status": "pre_apply_validation_failed",
+                "workspace_root": str(root),
+                "patch_sha256": patch_digest,
+                "effects_enabled": False,
+                "validation": {"pre_apply": revalidation, "presets": []},
+                "git_evidence": {"target_evidence": target_evidence},
+            },
+            db_path=db_path,
+        )
+    applied = _apply_patch_bytes(patch_text, workspace_root=root)
+    if not applied["passed"]:
+        return record_execution_application(
+            {
+                "request_id": request_id,
+                "request_status": AWAITING_PATCH,
+                "status_reason": "Patch application failed without recorded workspace effects.",
+                "application_status": "apply_failed",
+                "workspace_root": str(root),
+                "patch_sha256": patch_digest,
+                "effects_enabled": False,
+                "validation": {"pre_apply": revalidation, "presets": []},
+                "git_evidence": {"target_evidence": target_evidence, "apply": applied},
+            },
+            db_path=db_path,
+        )
+    requested_validations = validations or ["git_diff_check"]
+    invalid_presets = sorted(set(requested_validations).difference(VALIDATION_PRESETS))
+    if invalid_presets:
+        rollback = _apply_patch_bytes(patch_text, workspace_root=root, reverse=True)
+        raise ValueError(
+            f"Validation presets are not allowed: {', '.join(invalid_presets)}. "
+            f"Patch rollback passed={rollback['passed']}."
+        )
+    validation_results = [
+        {
+            "preset": preset,
+            **_run_command(VALIDATION_PRESETS[preset], workspace_root=root),
+        }
+        for preset in requested_validations
+    ]
+    all_passed = all(result["passed"] for result in validation_results)
+    git_evidence = {
+        "target_evidence": target_evidence,
+        "apply": applied,
+        "diff_stat": _run_command(["git", "diff", "--stat"], workspace_root=root),
+    }
+    if not all_passed:
+        rollback = _apply_patch_bytes(patch_text, workspace_root=root, reverse=True)
+        return record_execution_application(
+            {
+                "request_id": request_id,
+                "request_status": ROLLED_BACK,
+                "status_reason": "Patch was rolled back after validation failure.",
+                "application_status": "rolled_back_validation_failed",
+                "workspace_root": str(root),
+                "patch_sha256": patch_digest,
+                "effects_enabled": False,
+                "validation": {"pre_apply": revalidation, "presets": validation_results},
+                "git_evidence": {**git_evidence, "rollback": rollback},
+                "rollback_reason": "One or more approved validation presets failed.",
+            },
+            db_path=db_path,
+        )
+    return record_execution_application(
+        {
+            "request_id": request_id,
+            "request_status": APPLIED_VALIDATED,
+            "status_reason": "Patch applied and validation evidence recorded; Git delivery remains manual.",
+            "application_status": "applied_validated",
+            "workspace_root": str(root),
+            "patch_sha256": patch_digest,
+            "effects_enabled": True,
+            "validation": {"pre_apply": revalidation, "presets": validation_results},
+            "git_evidence": git_evidence,
+        },
+        db_path=db_path,
+    )
+
+
+def rollback_execution_request(
+    request_id: str,
+    *,
+    workspace_root: str | Path = ".",
+    reason: str = "Human requested rollback.",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    snapshot = execution_request_snapshot(request_id=request_id, db_path=db_path)
+    if not snapshot["requests"]:
+        raise ValueError("Execution request not found.")
+    request = snapshot["requests"][0]
+    if request["status"] != APPLIED_VALIDATED:
+        raise ValueError("Only applied and validated executions can be rolled back.")
+    preparation = request.get("preparation")
+    root = Path(workspace_root).resolve()
+    if not preparation or str(root) != preparation["workspace_root"]:
+        raise ValueError("Workspace root differs from the applied execution workspace.")
+    rollback = _apply_patch_bytes(preparation["patch_text"], workspace_root=root, reverse=True)
+    if not rollback["passed"]:
+        raise ValueError(f"Rollback could not be applied: {rollback['details']}")
+    application = request.get("application", {})
+    return record_execution_application(
+        {
+            "request_id": request_id,
+            "request_status": ROLLED_BACK,
+            "status_reason": "Applied patch rolled back by human request.",
+            "application_status": "rolled_back",
+            "workspace_root": str(root),
+            "patch_sha256": preparation["patch_sha256"],
+            "effects_enabled": False,
+            "validation": application.get("validation", {}),
+            "git_evidence": {**application.get("git_evidence", {}), "rollback": rollback},
+            "rollback_reason": reason,
+        },
         db_path=db_path,
     )
 

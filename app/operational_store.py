@@ -147,6 +147,19 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 validation_json TEXT NOT NULL,
                 FOREIGN KEY (request_id) REFERENCES execution_requests(request_id)
             );
+
+            CREATE TABLE IF NOT EXISTS execution_applications (
+                request_id TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                application_status TEXT NOT NULL,
+                workspace_root TEXT NOT NULL,
+                patch_sha256 TEXT NOT NULL,
+                validation_json TEXT NOT NULL,
+                git_evidence_json TEXT NOT NULL,
+                rollback_reason TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (request_id) REFERENCES execution_requests(request_id)
+            );
             """
         )
         baseline_columns = {
@@ -383,6 +396,8 @@ def record_execution_request(
                         'awaiting_patch',
                         'awaiting_apply_approval',
                         'approved_for_apply',
+                        'applied_validated',
+                        'rolled_back',
                         'rejected'
                     )
                     THEN execution_requests.status
@@ -580,6 +595,66 @@ def record_execution_preparation(
     return execution_request_snapshot(request_id=request_id, db_path=db_path)["requests"][0]
 
 
+def record_execution_application(
+    application: dict[str, Any],
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    initialize_schema(db_path)
+    request_id = application["request_id"]
+    with _connection(db_path) as connection:
+        request = connection.execute(
+            "SELECT status FROM execution_requests WHERE request_id=?",
+            (request_id,),
+        ).fetchone()
+        if request is None:
+            raise ValueError("Execution request not found.")
+        now = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            """
+            INSERT INTO execution_applications (
+                request_id, applied_at, updated_at, application_status,
+                workspace_root, patch_sha256, validation_json,
+                git_evidence_json, rollback_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(request_id) DO UPDATE SET
+                updated_at=excluded.updated_at,
+                application_status=excluded.application_status,
+                workspace_root=excluded.workspace_root,
+                patch_sha256=excluded.patch_sha256,
+                validation_json=excluded.validation_json,
+                git_evidence_json=excluded.git_evidence_json,
+                rollback_reason=excluded.rollback_reason
+            """,
+            (
+                request_id,
+                now,
+                now,
+                application["application_status"],
+                application["workspace_root"],
+                application["patch_sha256"],
+                json.dumps(application.get("validation", {}), ensure_ascii=False),
+                json.dumps(application.get("git_evidence", {}), ensure_ascii=False),
+                application.get("rollback_reason", ""),
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE execution_requests
+            SET status=?, status_reason=?, effects_enabled=?, updated_at=?
+            WHERE request_id=?
+            """,
+            (
+                application["request_status"],
+                application["status_reason"],
+                int(application.get("effects_enabled", False)),
+                now,
+                request_id,
+            ),
+        )
+    return execution_request_snapshot(request_id=request_id, db_path=db_path)["requests"][0]
+
+
 def execution_request_snapshot(
     *,
     request_id: str | None = None,
@@ -629,6 +704,18 @@ def execution_request_snapshot(
                 )
                 request["preparation"]["validation"] = json.loads(
                     request["preparation"].pop("validation_json")
+                )
+            application = connection.execute(
+                "SELECT * FROM execution_applications WHERE request_id=?",
+                (request["request_id"],),
+            ).fetchone()
+            request["application"] = dict(application) if application else None
+            if request["application"]:
+                request["application"]["validation"] = json.loads(
+                    request["application"].pop("validation_json")
+                )
+                request["application"]["git_evidence"] = json.loads(
+                    request["application"].pop("git_evidence_json")
                 )
     return {"request_count": len(requests), "requests": requests}
 

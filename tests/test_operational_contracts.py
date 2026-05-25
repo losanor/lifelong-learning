@@ -2,6 +2,8 @@ import unittest
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
+import tempfile
 
 import app.graph as graph_module
 from app.evals import EvalScenario, assess_scenario
@@ -9,10 +11,12 @@ from app.mock_model import MockResponse
 from app.observability import build_run_config
 from app.project_scope import resolve_work_scope
 from app.execution_engine import (
+    apply_execution_request,
     create_execution_request,
     decide_apply_execution,
     decide_execution_request,
     prepare_execution_request,
+    rollback_execution_request,
 )
 from app.operational_store import (
     baseline_snapshot,
@@ -432,6 +436,167 @@ class OperationalContractsTest(unittest.TestCase):
                     decided_by="owner",
                     db_path=db_path,
                 )
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_controlled_apply_records_evidence_and_supports_rollback(self):
+        db_path = Path("data") / "test_apply_execution.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        Path("data").mkdir(exist_ok=True)
+        try:
+            with tempfile.TemporaryDirectory(dir="data") as temp_dir:
+                workspace = Path(temp_dir)
+                target = workspace / "README.md"
+                target.write_text("# Before\n\nContext.\n", encoding="utf-8")
+                subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+                subprocess.run(["git", "add", "README.md"], cwd=workspace, check=True)
+                subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=tests",
+                        "-c",
+                        "user.email=tests@example.test",
+                        "commit",
+                        "-q",
+                        "-m",
+                        "base",
+                    ],
+                    cwd=workspace,
+                    check=True,
+                )
+                result = {
+                    "active_flow": "docs",
+                    "execution_policy": {"approval_required_actions": ["write_files"]},
+                    "route_status": "ended",
+                    "operational_packet": {
+                        "execution_ready": True,
+                        "target_refs": ["README.md"],
+                        "recommended_actions": ["Atualizar README."],
+                        "verification_steps": ["Validar diff."],
+                        "git_actions": [],
+                    },
+                    "structured_outputs": {},
+                    "orchestrator_checks": {},
+                }
+                record_run(result, run_id="run_apply", user_goal="Editar README.", db_path=db_path)
+                request = create_execution_request(result, run_id="run_apply", db_path=db_path)
+                decide_execution_request(
+                    request["request_id"], decision="approved", decided_by="owner", db_path=db_path
+                )
+                patch = (
+                    "--- a/README.md\n"
+                    "+++ b/README.md\n"
+                    "@@ -1,3 +1,3 @@\n"
+                    "-# Before\n"
+                    "+# After\n"
+                    " \n"
+                    " Context.\n"
+                )
+                prepare_execution_request(
+                    request["request_id"],
+                    patch_text=patch,
+                    workspace_root=workspace,
+                    db_path=db_path,
+                )
+                decide_apply_execution(
+                    request["request_id"], decision="approved", decided_by="owner", db_path=db_path
+                )
+
+                applied = apply_execution_request(
+                    request["request_id"],
+                    workspace_root=workspace,
+                    validations=["git_diff_check"],
+                    db_path=db_path,
+                )
+                self.assertEqual(applied["status"], "applied_validated")
+                self.assertTrue(applied["effects_enabled"])
+                self.assertEqual(target.read_text(encoding="utf-8"), "# After\n\nContext.\n")
+                self.assertTrue(applied["application"]["validation"]["presets"][0]["passed"])
+
+                rolled_back = rollback_execution_request(
+                    request["request_id"],
+                    workspace_root=workspace,
+                    reason="Teste de reversao.",
+                    db_path=db_path,
+                )
+                self.assertEqual(rolled_back["status"], "rolled_back")
+                self.assertFalse(rolled_back["effects_enabled"])
+                self.assertEqual(target.read_text(encoding="utf-8"), "# Before\n\nContext.\n")
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_controlled_apply_rolls_back_when_validation_fails(self):
+        db_path = Path("data") / "test_apply_failure.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        Path("data").mkdir(exist_ok=True)
+        try:
+            with tempfile.TemporaryDirectory(dir="data") as temp_dir:
+                workspace = Path(temp_dir)
+                target = workspace / "README.md"
+                target.write_text("# Before\n\nContext.\n", encoding="utf-8")
+                subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+                subprocess.run(["git", "add", "README.md"], cwd=workspace, check=True)
+                subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=tests",
+                        "-c",
+                        "user.email=tests@example.test",
+                        "commit",
+                        "-q",
+                        "-m",
+                        "base",
+                    ],
+                    cwd=workspace,
+                    check=True,
+                )
+                result = {
+                    "execution_policy": {"approval_required_actions": ["write_files"]},
+                    "route_status": "ended",
+                    "operational_packet": {
+                        "execution_ready": True,
+                        "target_refs": ["README.md"],
+                        "recommended_actions": ["Atualizar."],
+                        "verification_steps": ["Testar."],
+                        "git_actions": [],
+                    },
+                    "structured_outputs": {},
+                    "orchestrator_checks": {},
+                }
+                record_run(result, run_id="run_failed_apply", user_goal="Editar.", db_path=db_path)
+                request = create_execution_request(result, run_id="run_failed_apply", db_path=db_path)
+                decide_execution_request(
+                    request["request_id"], decision="approved", decided_by="owner", db_path=db_path
+                )
+                patch = (
+                    "--- a/README.md\n+++ b/README.md\n@@ -1,3 +1,3 @@\n"
+                    "-# Before\n+# After\n \n Context.\n"
+                )
+                prepare_execution_request(
+                    request["request_id"], patch_text=patch, workspace_root=workspace, db_path=db_path
+                )
+                decide_apply_execution(
+                    request["request_id"], decision="approved", decided_by="owner", db_path=db_path
+                )
+
+                failed = apply_execution_request(
+                    request["request_id"],
+                    workspace_root=workspace,
+                    validations=["unit_tests"],
+                    db_path=db_path,
+                )
+                self.assertEqual(failed["status"], "rolled_back")
+                self.assertEqual(
+                    failed["application"]["application_status"],
+                    "rolled_back_validation_failed",
+                )
+                self.assertEqual(target.read_text(encoding="utf-8"), "# Before\n\nContext.\n")
         finally:
             if db_path.exists():
                 db_path.unlink()
