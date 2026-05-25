@@ -8,7 +8,12 @@ from app.evals import EvalScenario, assess_scenario
 from app.mock_model import MockResponse
 from app.observability import build_run_config
 from app.project_scope import resolve_work_scope
-from app.execution_engine import create_execution_request, decide_execution_request
+from app.execution_engine import (
+    create_execution_request,
+    decide_apply_execution,
+    decide_execution_request,
+    prepare_execution_request,
+)
 from app.operational_store import (
     baseline_snapshot,
     execution_request_snapshot,
@@ -296,6 +301,132 @@ class OperationalContractsTest(unittest.TestCase):
             self.assertEqual(stored["requested_effects"], [])
             with self.assertRaises(ValueError):
                 decide_execution_request(
+                    request["request_id"],
+                    decision="approved",
+                    decided_by="owner",
+                    db_path=db_path,
+                )
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_preparation_validates_scoped_patch_before_second_approval(self):
+        db_path = Path("data") / "test_patch_preparation.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        try:
+            result = {
+                "active_flow": "docs",
+                "execution_policy": {
+                    "execution_tier": "quick",
+                    "approval_required_actions": ["write_files"],
+                },
+                "route_status": "ended",
+                "operational_packet": {
+                    "execution_ready": True,
+                    "target_refs": ["README.md"],
+                    "recommended_actions": ["Atualizar titulo."],
+                    "verification_steps": ["Revisar diff."],
+                    "git_actions": [],
+                },
+                "structured_outputs": {},
+                "orchestrator_checks": {},
+            }
+            record_run(result, run_id="run_patch", user_goal="Atualizar titulo.", db_path=db_path)
+            request = create_execution_request(result, run_id="run_patch", db_path=db_path)
+            decide_execution_request(
+                request["request_id"],
+                decision="approved",
+                decided_by="owner",
+                db_path=db_path,
+            )
+            patch = (
+                "--- a/README.md\n"
+                "+++ b/README.md\n"
+                "@@ -1,3 +1,3 @@\n"
+                "-# Squad v5 Lite\n"
+                "+# Squad v5 Lite Validated\n"
+                " \n"
+                " Squad multiagente enxuta para transformar um objetivo em discovery, escopo,\n"
+            )
+
+            prepared = prepare_execution_request(
+                request["request_id"],
+                patch_text=patch,
+                workspace_root=".",
+                db_path=db_path,
+            )
+            apply_approved = decide_apply_execution(
+                request["request_id"],
+                decision="approved",
+                decided_by="owner",
+                notes="Patch conferido; aplicacao ainda depende do executor.",
+                db_path=db_path,
+            )
+            create_execution_request(result, run_id="run_patch", db_path=db_path)
+            persisted = execution_request_snapshot(
+                request_id=request["request_id"],
+                db_path=db_path,
+            )["requests"][0]
+
+            self.assertEqual(prepared["status"], "awaiting_apply_approval")
+            self.assertIn("apply approval", prepared["status_reason"])
+            self.assertEqual(prepared["preparation"]["preparation_status"], "patch_validated")
+            self.assertTrue(prepared["preparation"]["validation"]["passed"])
+            self.assertTrue(prepared["preparation"]["validation"]["git_apply_check"]["passed"])
+            self.assertEqual(apply_approved["status"], "approved_for_apply")
+            self.assertIn("not enabled", apply_approved["status_reason"])
+            self.assertFalse(apply_approved["effects_enabled"])
+            self.assertEqual(apply_approved["approvals"][1]["approval_stage"], "apply")
+            self.assertEqual(persisted["status"], "approved_for_apply")
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_preparation_rejects_patch_outside_approved_targets(self):
+        db_path = Path("data") / "test_unapproved_patch.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        try:
+            result = {
+                "active_flow": "docs",
+                "execution_policy": {"approval_required_actions": ["write_files"]},
+                "route_status": "ended",
+                "operational_packet": {
+                    "execution_ready": True,
+                    "target_refs": ["README.md"],
+                    "recommended_actions": ["Editar README."],
+                    "verification_steps": ["Revisar diff."],
+                    "git_actions": [],
+                },
+                "structured_outputs": {},
+                "orchestrator_checks": {},
+            }
+            record_run(result, run_id="run_scope", user_goal="Editar README.", db_path=db_path)
+            request = create_execution_request(result, run_id="run_scope", db_path=db_path)
+            decide_execution_request(
+                request["request_id"],
+                decision="approved",
+                decided_by="owner",
+                db_path=db_path,
+            )
+            patch = "--- a/app/main.py\n+++ b/app/main.py\n@@ -1 +1 @@\n-x\n+y\n"
+
+            prepared = prepare_execution_request(
+                request["request_id"],
+                patch_text=patch,
+                workspace_root=".",
+                db_path=db_path,
+            )
+
+            self.assertEqual(prepared["status"], "awaiting_patch")
+            self.assertEqual(prepared["preparation"]["preparation_status"], "patch_rejected")
+            self.assertIn(
+                "app/main.py",
+                prepared["preparation"]["validation"]["unapproved_target_refs"],
+            )
+            with self.assertRaises(ValueError):
+                decide_apply_execution(
                     request["request_id"],
                     decision="approved",
                     decided_by="owner",

@@ -39,6 +39,8 @@ Primeiras telas previstas:
 
 - Fila persistente de pedidos e decisoes humanas em dry-run. (implementado)
 - Approval gate que impede efeitos antes da decisao. (implementado)
+- Validacao de diff candidato contra alvos autorizados e `git apply --check`. (implementado)
+- Segundo checkpoint humano antes de futura aplicacao do patch. (implementado)
 - Escrita controlada no workspace.
 - Validacao automatica, diff e evidencias.
 - Matriz executavel de autorizacoes.

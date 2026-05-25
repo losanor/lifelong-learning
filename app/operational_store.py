@@ -130,8 +130,21 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 request_id TEXT NOT NULL,
                 decided_at TEXT NOT NULL,
                 decision TEXT NOT NULL CHECK (decision IN ('approved', 'rejected')),
+                approval_stage TEXT NOT NULL DEFAULT 'prepare',
                 decided_by TEXT NOT NULL,
                 notes TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (request_id) REFERENCES execution_requests(request_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS execution_preparations (
+                request_id TEXT PRIMARY KEY,
+                prepared_at TEXT NOT NULL,
+                preparation_status TEXT NOT NULL,
+                workspace_root TEXT NOT NULL,
+                patch_sha256 TEXT NOT NULL DEFAULT '',
+                patch_text TEXT NOT NULL DEFAULT '',
+                target_evidence_json TEXT NOT NULL,
+                validation_json TEXT NOT NULL,
                 FOREIGN KEY (request_id) REFERENCES execution_requests(request_id)
             );
             """
@@ -189,6 +202,15 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 connection.execute(
                     f"ALTER TABLE execution_requests ADD COLUMN {column_name} {column_type}"
                 )
+        approval_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(execution_approvals)").fetchall()
+        }
+        if "approval_stage" not in approval_columns:
+            connection.execute(
+                "ALTER TABLE execution_approvals "
+                "ADD COLUMN approval_stage TEXT NOT NULL DEFAULT 'prepare'"
+            )
 
 
 def record_run(
@@ -356,7 +378,13 @@ def record_execution_request(
                 project_id=excluded.project_id,
                 initiative_id=excluded.initiative_id,
                 status=CASE
-                    WHEN execution_requests.status IN ('approved_for_dry_run', 'rejected')
+                    WHEN execution_requests.status IN (
+                        'approved_for_dry_run',
+                        'awaiting_patch',
+                        'awaiting_apply_approval',
+                        'approved_for_apply',
+                        'rejected'
+                    )
                     THEN execution_requests.status
                     ELSE excluded.status
                 END,
@@ -418,18 +446,136 @@ def record_execution_decision(
         connection.execute(
             """
             INSERT INTO execution_approvals (
-                request_id, decided_at, decision, decided_by, notes
-            ) VALUES (?, ?, ?, ?, ?)
+                request_id, decided_at, decision, approval_stage, decided_by, notes
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (request_id, now, decision, decided_by, notes),
+            (request_id, now, decision, "prepare", decided_by, notes),
         )
         connection.execute(
             """
             UPDATE execution_requests
-            SET status=?, updated_at=?
+            SET status=?, status_reason=?, updated_at=?
             WHERE request_id=?
             """,
-            (status, now, request_id),
+            (
+                status,
+                (
+                    "Preparation approved; awaiting a scoped candidate diff."
+                    if decision == "approved"
+                    else "Execution request rejected during preparation approval."
+                ),
+                now,
+                request_id,
+            ),
+        )
+    return execution_request_snapshot(request_id=request_id, db_path=db_path)["requests"][0]
+
+
+def record_apply_decision(
+    request_id: str,
+    *,
+    decision: str,
+    decided_by: str,
+    notes: str = "",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    if decision not in {"approved", "rejected"}:
+        raise ValueError("Execution decision must be approved or rejected.")
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        request = connection.execute(
+            "SELECT status FROM execution_requests WHERE request_id=?",
+            (request_id,),
+        ).fetchone()
+        if request is None:
+            raise ValueError("Execution request not found.")
+        if request["status"] != "awaiting_apply_approval":
+            raise ValueError("Only validated patches can receive apply approval.")
+        status = "approved_for_apply" if decision == "approved" else "rejected"
+        now = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            """
+            INSERT INTO execution_approvals (
+                request_id, decided_at, decision, approval_stage, decided_by, notes
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (request_id, now, decision, "apply", decided_by, notes),
+        )
+        connection.execute(
+            """
+            UPDATE execution_requests SET status=?, status_reason=?, updated_at=?
+            WHERE request_id=?
+            """,
+            (
+                status,
+                (
+                    "Patch approved; controlled workspace application is not enabled yet."
+                    if decision == "approved"
+                    else "Validated patch rejected before workspace application."
+                ),
+                now,
+                request_id,
+            ),
+        )
+    return execution_request_snapshot(request_id=request_id, db_path=db_path)["requests"][0]
+
+
+def record_execution_preparation(
+    preparation: dict[str, Any],
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    initialize_schema(db_path)
+    request_id = preparation["request_id"]
+    request_status = preparation["request_status"]
+    allowed_statuses = {"approved_for_dry_run", "awaiting_patch", "awaiting_apply_approval"}
+    with _connection(db_path) as connection:
+        request = connection.execute(
+            "SELECT status FROM execution_requests WHERE request_id=?",
+            (request_id,),
+        ).fetchone()
+        if request is None:
+            raise ValueError("Execution request not found.")
+        if request["status"] not in allowed_statuses:
+            raise ValueError("Execution request is not approved for preparation.")
+        now = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            """
+            INSERT INTO execution_preparations (
+                request_id, prepared_at, preparation_status, workspace_root,
+                patch_sha256, patch_text, target_evidence_json, validation_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(request_id) DO UPDATE SET
+                prepared_at=excluded.prepared_at,
+                preparation_status=excluded.preparation_status,
+                workspace_root=excluded.workspace_root,
+                patch_sha256=excluded.patch_sha256,
+                patch_text=excluded.patch_text,
+                target_evidence_json=excluded.target_evidence_json,
+                validation_json=excluded.validation_json
+            """,
+            (
+                request_id,
+                now,
+                preparation["preparation_status"],
+                preparation["workspace_root"],
+                preparation.get("patch_sha256", ""),
+                preparation.get("patch_text", ""),
+                json.dumps(preparation.get("target_evidence", []), ensure_ascii=False),
+                json.dumps(preparation.get("validation", {}), ensure_ascii=False),
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE execution_requests SET status=?, status_reason=?, updated_at=?
+            WHERE request_id=?
+            """,
+            (
+                request_status,
+                preparation.get("status_reason", ""),
+                now,
+                request_id,
+            ),
         )
     return execution_request_snapshot(request_id=request_id, db_path=db_path)["requests"][0]
 
@@ -454,7 +600,7 @@ def execution_request_snapshot(
         for request in requests:
             approval_rows = connection.execute(
                 """
-                SELECT decision, decided_at, decided_by, notes
+                SELECT decision, approval_stage, decided_at, decided_by, notes
                 FROM execution_approvals
                 WHERE request_id=?
                 ORDER BY approval_id ASC
@@ -472,6 +618,18 @@ def execution_request_snapshot(
             request["execution_policy"] = json.loads(request.pop("policy_json"))
             request["operational_packet"] = json.loads(request.pop("packet_json"))
             request["approvals"] = [dict(row) for row in approval_rows]
+            preparation = connection.execute(
+                "SELECT * FROM execution_preparations WHERE request_id=?",
+                (request["request_id"],),
+            ).fetchone()
+            request["preparation"] = dict(preparation) if preparation else None
+            if request["preparation"]:
+                request["preparation"]["target_evidence"] = json.loads(
+                    request["preparation"].pop("target_evidence_json")
+                )
+                request["preparation"]["validation"] = json.loads(
+                    request["preparation"].pop("validation_json")
+                )
     return {"request_count": len(requests), "requests": requests}
 
 

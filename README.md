@@ -89,15 +89,19 @@ namespace de memoria e tier/orcamento de execucao.
 
 Quando `app.main` conclui uma run, o Execution Engine registra uma solicitacao.
 Pacotes `execution_ready: true` ficam em `pending_approval`; pacotes bloqueados
-ficam em `not_actionable`. Nesta fase, aprovar apenas move o pedido para
-`approved_for_dry_run`: nenhuma escrita, validacao, acao Git ou push e
-executado automaticamente.
+ficam em `not_actionable`. A primeira aprovacao permite preparar um diff
+candidato, que precisa afetar somente `target_refs` declarados e passar em
+`git apply --check`. Um patch valido fica em `awaiting_apply_approval`; a
+segunda aprovacao o move para `approved_for_apply`, ainda sem escrever no
+workspace. Aplicacao real sera habilitada somente no proximo incremento.
 
 Para consultar e decidir a fila local:
 
 ```powershell
 .\.venv\Scripts\python.exe -m app.review_execution list
 .\.venv\Scripts\python.exe -m app.review_execution approve <request_id> --by owner --notes "Preparar diff."
+.\.venv\Scripts\python.exe -m app.review_execution prepare <request_id> --patch-file .\candidate.patch
+.\.venv\Scripts\python.exe -m app.review_execution approve-apply <request_id> --by owner --notes "Patch validado."
 .\.venv\Scripts\python.exe -m app.review_execution reject <request_id> --by owner --notes "Revisar escopo."
 ```
 
@@ -168,8 +172,9 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
   para auditoria e debug.
 - O SQLite registra runs e artefatos estruturados sem depender de parsing de
   logs Markdown.
-- O Execution Engine registra pedidos persistentes e decisoes humanas, sempre
-  em dry-run enquanto os efeitos no workspace ainda nao estiverem implementados.
+- O Execution Engine registra pedidos, diffs candidatos, validacao de
+  aplicabilidade e decisoes humanas, sempre sem efeitos no workspace enquanto
+  a aplicacao controlada ainda nao estiver implementada.
 - O intake cria namespace deterministico por projeto/iniciativa e persiste uma
   politica de custo/aprovacao para a futura interface operacional.
 - Os evals cobrem feature, bugfix, documentacao, review, decisao, research,
@@ -187,9 +192,9 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
 - O `Workspace Context` informa refs e estado Git, mas nao executa alteracoes
   sozinho; implementation, docs e commits continuam dependendo do operador
   que aplicar o pacote operacional.
-- A aprovacao atual audita intencao e libera somente dry-run; escrita
-  controlada, diff automatico e execucao apos aprovacao pertencem ao proximo
-  incremento do Execution Engine.
+- As aprovacoes atuais auditam intencao e patch validado; escrita controlada e
+  execucao de testes sobre a alteracao aplicada pertencem ao proximo incremento
+  do Execution Engine.
 - O namespace ja e registrado, mas os arquivos de memoria atuais ainda
   precisam ser migrados para armazenamento particionado por iniciativa.
 - Validacao automatica de performance do modelo depende do provedor real,
