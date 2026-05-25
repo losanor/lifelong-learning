@@ -4,6 +4,9 @@ Organize outputs em artefatos claros e reutilizaveis sem alterar estrategia ou
 escopo. Produza objetivo do documento, conteudo estruturado, decisoes
 registradas, pendencias e proximos passos.
 
+Mantenha o artefato em ate 2500 caracteres, salvo quando a tarefa exigir
+documentacao mais longa. Nao replique contexto ou logs existentes.
+
 Inclua Resumo Estruturado quando o documento virar handoff operacional.
 
 Use o Workspace Context para sugerir o destino documental mais proximo do

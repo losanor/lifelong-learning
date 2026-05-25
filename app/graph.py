@@ -50,17 +50,49 @@ def read_prompt(name: str) -> str:
 
 
 class ValidatedResponse:
-    def __init__(self, raw_content: str, envelope, validation_errors: list[str]):
+    def __init__(
+        self,
+        raw_content: str,
+        envelope,
+        validation_errors: list[str],
+        *,
+        repair_attempted: bool = False,
+    ):
         self.raw_content = raw_content
         self.envelope = envelope
         self.validation_errors = validation_errors
+        self.repair_attempted = repair_attempted
         self.content = envelope.artifact_markdown
 
 
 def invoke_validated(agent_name: str, prompt: str) -> ValidatedResponse:
     raw_response = model.invoke(with_output_contract(prompt, agent_name))
     envelope, validation_errors = safe_parse_agent_output(raw_response.content, agent_name)
-    return ValidatedResponse(raw_response.content, envelope, validation_errors)
+    if not validation_errors:
+        return ValidatedResponse(raw_response.content, envelope, [])
+
+    compact_errors = " | ".join(" ".join(error.split())[:500] for error in validation_errors)
+    repair_prompt = (
+        f"{with_output_contract(prompt, agent_name)}\n\n"
+        "CORRECAO DE SCHEMA OBRIGATORIA:\n"
+        "A resposta anterior foi rejeitada pelo runtime. Preserve o conteudo util do "
+        "artefato, mas corrija estritamente o JSON conforme o contrato acima.\n"
+        f"Erros de validacao: {compact_errors}\n\n"
+        "Resposta anterior a corrigir:\n"
+        f"{raw_response.content[:5000]}"
+    )
+    repaired_response = model.invoke(repair_prompt)
+    repaired_envelope, repaired_errors = safe_parse_agent_output(repaired_response.content, agent_name)
+    combined_raw = (
+        f"INITIAL_ATTEMPT:\n{raw_response.content}\n\n"
+        f"REPAIR_ATTEMPT:\n{repaired_response.content}"
+    )
+    return ValidatedResponse(
+        combined_raw,
+        repaired_envelope,
+        repaired_errors,
+        repair_attempted=True,
+    )
 
 def format_agent_context(agent_name: str) -> str:
     """
@@ -106,14 +138,16 @@ def with_orchestrator_check(
     response: ValidatedResponse,
     payload: dict,
 ) -> dict:
+    checks = update_orchestrator_checks(
+        state,
+        agent_name=agent_name,
+        output=response.envelope,
+        validation_errors=response.validation_errors,
+    )
+    checks[agent_name]["repair_attempted"] = response.repair_attempted
     return {
         **payload,
-        "orchestrator_checks": update_orchestrator_checks(
-            state,
-            agent_name=agent_name,
-            output=response.envelope,
-            validation_errors=response.validation_errors,
-        ),
+        "orchestrator_checks": checks,
         "structured_outputs": {
             **state.get("structured_outputs", {}),
             agent_name: response.envelope.model_dump(mode="json"),

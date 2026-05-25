@@ -62,7 +62,10 @@ def inspect_agent_output(output: AgentOutputEnvelope, validation_errors: list[st
     ece = output.summary.ece if summary_received else "UNKNOWN"
     validation_errors = validation_errors or []
     issues: list[str] = []
-    issues.extend(f"Schema invalido: {error.splitlines()[0][:180]}" for error in validation_errors)
+    issues.extend(
+        f"Schema invalido: {' '.join(error.split())[:500]}"
+        for error in validation_errors
+    )
     if not summary_received:
         issues.append("Resumo Estruturado ausente.")
     if ece == "UNKNOWN":

@@ -65,6 +65,8 @@ O `artifact_markdown` continua sendo o documento legivel para humanos.
 O campo `summary` e a fonte de verdade operacional para ECE, bloqueios e proximo passo.
 O campo `operational_artifact` deve transformar o output em trabalho executavel no workspace real.
 Quando o contexto disser que Git nao existe, deixe `git_actions` vazio e nao presuma PR, branch ou commit.
+Para controlar custo e latencia, mantenha `artifact_markdown` conciso: ate 2500 caracteres,
+salvo quando a tarefa pedir expressamente um documento mais longo. Nao repita contexto recebido.
 """.strip()
 
 COS_CONTRACT_EXTENSION = """

@@ -62,6 +62,8 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 artifact_type TEXT NOT NULL,
                 execution_ready INTEGER NOT NULL,
                 target_refs_json TEXT NOT NULL,
+                validation_issues_json TEXT NOT NULL DEFAULT '[]',
+                repair_attempted INTEGER NOT NULL DEFAULT 0,
                 output_json TEXT NOT NULL,
                 PRIMARY KEY (run_id, agent_name),
                 FOREIGN KEY (run_id) REFERENCES runs(run_id)
@@ -109,6 +111,19 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
             )
         if "provider_error" not in baseline_columns:
             connection.execute("ALTER TABLE baseline_reviews ADD COLUMN provider_error TEXT")
+        output_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(agent_outputs)").fetchall()
+        }
+        if "validation_issues_json" not in output_columns:
+            connection.execute(
+                "ALTER TABLE agent_outputs "
+                "ADD COLUMN validation_issues_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "repair_attempted" not in output_columns:
+            connection.execute(
+                "ALTER TABLE agent_outputs ADD COLUMN repair_attempted INTEGER NOT NULL DEFAULT 0"
+            )
 
 
 def record_run(
@@ -175,14 +190,17 @@ def record_run(
                 """
                 INSERT INTO agent_outputs (
                     run_id, agent_name, ece, schema_valid, artifact_type,
-                    execution_ready, target_refs_json, output_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    execution_ready, target_refs_json, validation_issues_json,
+                    repair_attempted, output_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id, agent_name) DO UPDATE SET
                     ece=excluded.ece,
                     schema_valid=excluded.schema_valid,
                     artifact_type=excluded.artifact_type,
                     execution_ready=excluded.execution_ready,
                     target_refs_json=excluded.target_refs_json,
+                    validation_issues_json=excluded.validation_issues_json,
+                    repair_attempted=excluded.repair_attempted,
                     output_json=excluded.output_json
                 """,
                 (
@@ -193,6 +211,8 @@ def record_run(
                     artifact.get("artifact_type", ""),
                     int(artifact.get("execution_ready", False)),
                     json.dumps(artifact.get("target_refs", []), ensure_ascii=False),
+                    json.dumps(check.get("issues", []), ensure_ascii=False),
+                    int(check.get("repair_attempted", False)),
                     json.dumps(output, ensure_ascii=False),
                 ),
             )
@@ -378,6 +398,9 @@ def baseline_snapshot(baseline_id: str, db_path: str | Path = DEFAULT_DB_PATH) -
     results = [dict(row) for row in rows]
     for result in results:
         result["automatic_findings"] = json.loads(result.pop("automatic_findings_json"))
+        result["quality_score_eligible"] = result["execution_status"] == "completed"
+        if not result["quality_score_eligible"]:
+            result["automatic_score"] = None
         human_scores = [
             result["human_correctness"],
             result["human_practical_utility"],

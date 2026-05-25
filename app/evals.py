@@ -23,6 +23,7 @@ class EvalScenario:
     expected_flow: str
     required_agents: tuple[str, ...]
     forbidden_agents: tuple[str, ...] = ()
+    expected_c3_agents: tuple[str, ...] = ()
 
 
 SCENARIOS = (
@@ -148,10 +149,18 @@ def assess_scenario(scenario: EvalScenario, result: dict[str, Any]) -> tuple[flo
     else:
         findings.append("Ao menos um agente falhou no schema estruturado.")
 
-    if not any(output.get("summary", {}).get("ece") == "C3" for output in result.get("structured_outputs", {}).values()):
+    c3_agents = {
+        agent_name
+        for agent_name, output in result.get("structured_outputs", {}).items()
+        if output.get("summary", {}).get("ece") == "C3"
+    }
+    if c3_agents == set(scenario.expected_c3_agents):
         checks_passed += 1
     else:
-        findings.append("Run encerrou com output C3.")
+        findings.append(
+            "Outputs C3 esperados "
+            f"{sorted(scenario.expected_c3_agents)}; recebidos {sorted(c3_agents)}."
+        )
 
     return round(checks_passed / checks_total * 10, 2), findings
 

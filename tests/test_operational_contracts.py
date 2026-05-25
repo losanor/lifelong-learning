@@ -1,8 +1,11 @@
 import unittest
+import json
 from pathlib import Path
 import sqlite3
 
+import app.graph as graph_module
 from app.evals import EvalScenario, assess_scenario
+from app.mock_model import MockResponse
 from app.observability import build_run_config
 from app.operational_store import (
     baseline_snapshot,
@@ -75,6 +78,34 @@ class OperationalContractsTest(unittest.TestCase):
         self.assertTrue(output.operational_artifact.recommended_actions)
         self.assertTrue(output.operational_artifact.verification_steps)
 
+    def test_invalid_agent_output_is_repaired_once_before_blocking(self):
+        invalid = json.loads(mock_agent_output("product", "# Product", ece=ECE.C2))
+        invalid["summary"]["fase"] = "release"
+        repaired = mock_agent_output("product", "# Product corrigido", ece=ECE.C2)
+
+        class RepairingModel:
+            def __init__(self):
+                self.responses = [MockResponse(json.dumps(invalid)), MockResponse(repaired)]
+                self.calls = 0
+
+            def invoke(self, prompt):
+                response = self.responses[self.calls]
+                self.calls += 1
+                return response
+
+        original_model = graph_module.model
+        repair_model = RepairingModel()
+        graph_module.model = repair_model
+        try:
+            response = graph_module.invoke_validated("product", "Gerar product brief.")
+        finally:
+            graph_module.model = original_model
+
+        self.assertEqual(repair_model.calls, 2)
+        self.assertTrue(response.repair_attempted)
+        self.assertFalse(response.validation_errors)
+        self.assertEqual(response.content, "# Product corrigido")
+
     def test_workspace_context_reports_docs_and_git_policy(self):
         context = capture_workspace_context()
         formatted = format_workspace_context(context)
@@ -104,14 +135,29 @@ class OperationalContractsTest(unittest.TestCase):
                 "human_escalation_created": False,
                 "operational_packet": {"execution_ready": True},
                 "structured_outputs": {"writing": output.model_dump(mode="json")},
-                "orchestrator_checks": {"writing": {"schema_valid": True}},
+                "orchestrator_checks": {
+                    "writing": {
+                        "schema_valid": True,
+                        "issues": [],
+                        "repair_attempted": True,
+                    }
+                },
             }
             record_run(result, run_id="unit_run", user_goal="Documentar README", duration_ms=12, db_path=db_path)
             metrics = metrics_snapshot(db_path)
+            connection = sqlite3.connect(db_path)
+            try:
+                stored_repair = connection.execute(
+                    "SELECT repair_attempted FROM agent_outputs WHERE run_id=? AND agent_name=?",
+                    ("unit_run", "writing"),
+                ).fetchone()[0]
+            finally:
+                connection.close()
 
             self.assertEqual(metrics["run_count"], 1)
             self.assertEqual(metrics["execution_ready_rate"], 1.0)
             self.assertEqual(metrics["average_agents_per_run"], 1.0)
+            self.assertEqual(stored_repair, 1)
         finally:
             if db_path.exists():
                 db_path.unlink()
@@ -131,6 +177,51 @@ class OperationalContractsTest(unittest.TestCase):
                 "verification_steps": ["Revisar conteudo."],
             },
             "orchestrator_checks": {"writing": {"schema_valid": True}},
+        }
+
+        score, findings = assess_scenario(scenario, result)
+
+        self.assertEqual(score, 10.0)
+        self.assertFalse(findings)
+
+    def test_eval_assessment_accepts_expected_governance_c3(self):
+        product, _ = safe_parse_agent_output(
+            mock_agent_output("product", "# Product bloqueado", ece=ECE.C3),
+            "product",
+        )
+        cos, _ = safe_parse_agent_output(
+            mock_agent_output(
+                "cos",
+                "# CoS no-go",
+                ece=ECE.C2,
+                decision="NO_GO",
+                route_action="END_CYCLE",
+            ),
+            "cos",
+        )
+        scenario = EvalScenario(
+            "guardrail",
+            "Avaliar escopo nao autorizado.",
+            "delivery_core",
+            ("product", "cos"),
+            ("engineering",),
+            ("product",),
+        )
+        result = {
+            "active_flow": "delivery_core",
+            "structured_outputs": {
+                "product": product.model_dump(mode="json"),
+                "cos": cos.model_dump(mode="json"),
+            },
+            "operational_packet": {
+                "execution_ready": True,
+                "recommended_actions": ["Registrar a decisao."],
+                "verification_steps": ["Confirmar bloqueio ativo."],
+            },
+            "orchestrator_checks": {
+                "product": {"schema_valid": True},
+                "cos": {"schema_valid": True},
+            },
         }
 
         score, findings = assess_scenario(scenario, result)
@@ -168,6 +259,7 @@ class OperationalContractsTest(unittest.TestCase):
             self.assertEqual(report["scenario_count"], 1)
             self.assertEqual(report["results"][0]["human_average_score"], 8.8)
             self.assertEqual(report["results"][0]["execution_status"], "completed")
+            self.assertTrue(report["results"][0]["quality_score_eligible"])
         finally:
             if db_path.exists():
                 db_path.unlink()
@@ -218,6 +310,8 @@ class OperationalContractsTest(unittest.TestCase):
 
             self.assertEqual(report["results"][0]["execution_status"], "provider_failed")
             self.assertEqual(report["results"][0]["provider_error"], "credits unavailable")
+            self.assertIsNone(report["results"][0]["automatic_score"])
+            self.assertFalse(report["results"][0]["quality_score_eligible"])
         finally:
             if db_path.exists():
                 db_path.unlink()
