@@ -160,6 +160,19 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 rollback_reason TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY (request_id) REFERENCES execution_requests(request_id)
             );
+
+            CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+                checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                status TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_workflow_checkpoints_thread
+                ON workflow_checkpoints(thread_id, checkpoint_id);
             """
         )
         baseline_columns = {
@@ -653,6 +666,90 @@ def record_execution_application(
             ),
         )
     return execution_request_snapshot(request_id=request_id, db_path=db_path)["requests"][0]
+
+
+def record_workflow_checkpoint(
+    *,
+    thread_id: str,
+    run_id: str,
+    stage: str,
+    status: str,
+    payload: dict[str, Any],
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> None:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO workflow_checkpoints (
+                thread_id, run_id, recorded_at, stage, status, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                thread_id,
+                run_id,
+                datetime.now(timezone.utc).isoformat(),
+                stage,
+                status,
+                json.dumps(payload, ensure_ascii=False),
+            ),
+        )
+
+
+def workflow_checkpoint_snapshot(
+    *,
+    thread_id: str | None = None,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        if thread_id:
+            rows = connection.execute(
+                """
+                SELECT * FROM workflow_checkpoints
+                WHERE thread_id=?
+                ORDER BY checkpoint_id ASC
+                """,
+                (thread_id,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT * FROM workflow_checkpoints ORDER BY checkpoint_id DESC"
+            ).fetchall()
+    checkpoints = [dict(row) for row in rows]
+    for checkpoint in checkpoints:
+        checkpoint["payload"] = json.loads(checkpoint.pop("payload_json"))
+    return {"checkpoint_count": len(checkpoints), "checkpoints": checkpoints}
+
+
+def pending_work_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
+    pending_statuses = {
+        "pending_approval": "Aprovar ou rejeitar preparacao.",
+        "approved_for_dry_run": "Enviar diff candidato para preparacao.",
+        "awaiting_patch": "Enviar diff corrigido.",
+        "awaiting_apply_approval": "Aprovar ou rejeitar aplicacao.",
+        "approved_for_apply": "Aplicar patch aprovado e executar validacoes.",
+        "applied_validated": "Revisar entrega; commit/push manual ou rollback.",
+    }
+    snapshot = execution_request_snapshot(db_path=db_path)
+    pending: list[dict[str, Any]] = []
+    for request in snapshot["requests"]:
+        status = request["status"]
+        if status not in pending_statuses:
+            continue
+        pending.append(
+            {
+                "thread_id": request["run_id"],
+                "request_id": request["request_id"],
+                "project_id": request["project_id"],
+                "initiative_id": request["initiative_id"],
+                "status": status,
+                "next_action": pending_statuses[status],
+                "target_refs": request["target_refs"],
+                "updated_at": request["updated_at"],
+            }
+        )
+    return {"pending_count": len(pending), "pending": pending}
 
 
 def execution_request_snapshot(

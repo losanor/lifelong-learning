@@ -38,6 +38,7 @@ Camadas compartilhadas:
 - `app/project_scope.py`: namespace de projeto/iniciativa para memoria futura.
 - `app/execution_policy.py`: tiers, budgets e aprovacoes previstas.
 - `app/execution_engine.py`: fila de execucao e approval gate em modo dry-run.
+- `app/workflow_recovery.py`: checkpoints duraveis e retomada da fila HITL.
 - `contracts.py`: CMO, Resumo Estruturado, Shared Memory e ECE.
 - `cmo_especializado.py`: factories de CMO para handoffs estruturados.
 - `app/intake.py`: politica de agentes fixos e sinais de especialistas sob demanda.
@@ -107,6 +108,8 @@ Para consultar e decidir a fila local:
 .\.venv\Scripts\python.exe -m app.review_execution apply <request_id> --validate git_diff_check --validate python_compile
 .\.venv\Scripts\python.exe -m app.review_execution rollback <request_id> --reason "Cancelar entrega."
 .\.venv\Scripts\python.exe -m app.review_execution reject <request_id> --by owner --notes "Revisar escopo."
+.\.venv\Scripts\python.exe -m app.workflow_recovery pending
+.\.venv\Scripts\python.exe -m app.workflow_recovery resume <request_id>
 ```
 
 Para iniciar uma baseline real rastreada, primeiro configure chaves somente em
@@ -178,6 +181,8 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
   logs Markdown.
 - O Execution Engine registra pedidos, diffs candidatos, validacao de
   aplicabilidade, aplicacao controlada, validacoes allowlisted e rollback.
+- Cada transicao humana/executora produz checkpoint SQLite append-only; apos
+  reinicio, `workflow_recovery` recupera itens pendentes e sua timeline.
 - O intake cria namespace deterministico por projeto/iniciativa e persiste uma
   politica de custo/aprovacao para a futura interface operacional.
 - Os evals cobrem feature, bugfix, documentacao, review, decisao, research,
@@ -197,6 +202,9 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
   que aplicar o pacote operacional.
 - A aplicacao controlada ainda nao cria commits ou publica branches; esses
   efeitos Git seguem como operacao deliberada apos revisar evidencias.
+- O checkpoint duravel local cobre o workflow de efeitos e aprovacoes. Em
+  producao distribuida, o backend recomendado continua sendo Agent Server com
+  PostgreSQL para retomar tambem a execucao interna do grafo.
 - O namespace ja e registrado, mas os arquivos de memoria atuais ainda
   precisam ser migrados para armazenamento particionado por iniciativa.
 - Validacao automatica de performance do modelo depende do provedor real,

@@ -17,6 +17,7 @@ from app.operational_store import (
     record_execution_application,
     record_execution_preparation,
     record_execution_request,
+    record_workflow_checkpoint,
 )
 
 
@@ -188,6 +189,14 @@ def create_execution_request(
 ) -> dict[str, Any]:
     request = build_execution_request(result, run_id=run_id)
     record_execution_request(request, db_path=db_path)
+    record_workflow_checkpoint(
+        thread_id=run_id,
+        run_id=run_id,
+        stage="execution_request_created",
+        status=request["status"],
+        payload={"request_id": request["request_id"], "target_refs": request["target_refs"]},
+        db_path=db_path,
+    )
     return request
 
 
@@ -199,13 +208,22 @@ def decide_execution_request(
     notes: str = "",
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
-    return record_execution_decision(
+    decided = record_execution_decision(
         request_id,
         decision=decision,
         decided_by=decided_by,
         notes=notes,
         db_path=db_path,
     )
+    record_workflow_checkpoint(
+        thread_id=decided["run_id"],
+        run_id=decided["run_id"],
+        stage="preparation_approval_decided",
+        status=decided["status"],
+        payload={"request_id": request_id, "decision": decision, "decided_by": decided_by},
+        db_path=db_path,
+    )
+    return decided
 
 
 def prepare_execution_request(
@@ -257,7 +275,21 @@ def prepare_execution_request(
         "target_evidence": target_evidence,
         "validation": validation,
     }
-    return record_execution_preparation(preparation, db_path=db_path)
+    prepared = record_execution_preparation(preparation, db_path=db_path)
+    record_workflow_checkpoint(
+        thread_id=prepared["run_id"],
+        run_id=prepared["run_id"],
+        stage="candidate_patch_prepared",
+        status=prepared["status"],
+        payload={
+            "request_id": request_id,
+            "preparation_status": preparation_status,
+            "patch_sha256": preparation["patch_sha256"],
+            "validation": validation,
+        },
+        db_path=db_path,
+    )
+    return prepared
 
 
 def decide_apply_execution(
@@ -268,13 +300,22 @@ def decide_apply_execution(
     notes: str = "",
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
-    return record_apply_decision(
+    decided = record_apply_decision(
         request_id,
         decision=decision,
         decided_by=decided_by,
         notes=notes,
         db_path=db_path,
     )
+    record_workflow_checkpoint(
+        thread_id=decided["run_id"],
+        run_id=decided["run_id"],
+        stage="apply_approval_decided",
+        status=decided["status"],
+        payload={"request_id": request_id, "decision": decision, "decided_by": decided_by},
+        db_path=db_path,
+    )
+    return decided
 
 
 def _run_command(command: list[str], *, workspace_root: Path, timeout: int = 120) -> dict[str, Any]:
@@ -330,6 +371,29 @@ def _apply_patch_bytes(
         return {"passed": False, "details": str(error)}
 
 
+def _record_application_with_checkpoint(
+    application: dict[str, Any],
+    *,
+    stage: str,
+    db_path: str | Path,
+) -> dict[str, Any]:
+    recorded = record_execution_application(application, db_path=db_path)
+    record_workflow_checkpoint(
+        thread_id=recorded["run_id"],
+        run_id=recorded["run_id"],
+        stage=stage,
+        status=recorded["status"],
+        payload={
+            "request_id": application["request_id"],
+            "application_status": application["application_status"],
+            "validation": application.get("validation", {}),
+            "rollback_reason": application.get("rollback_reason", ""),
+        },
+        db_path=db_path,
+    )
+    return recorded
+
+
 def apply_execution_request(
     request_id: str,
     *,
@@ -358,7 +422,7 @@ def apply_execution_request(
     )
     revalidation = _validate_patch(patch_text, workspace_root=root, allowed_refs=allowed_refs)
     if not revalidation["passed"]:
-        return record_execution_application(
+        return _record_application_with_checkpoint(
             {
                 "request_id": request_id,
                 "request_status": AWAITING_PATCH,
@@ -370,11 +434,12 @@ def apply_execution_request(
                 "validation": {"pre_apply": revalidation, "presets": []},
                 "git_evidence": {"target_evidence": target_evidence},
             },
+            stage="application_precheck_failed",
             db_path=db_path,
         )
     applied = _apply_patch_bytes(patch_text, workspace_root=root)
     if not applied["passed"]:
-        return record_execution_application(
+        return _record_application_with_checkpoint(
             {
                 "request_id": request_id,
                 "request_status": AWAITING_PATCH,
@@ -386,6 +451,7 @@ def apply_execution_request(
                 "validation": {"pre_apply": revalidation, "presets": []},
                 "git_evidence": {"target_evidence": target_evidence, "apply": applied},
             },
+            stage="application_failed",
             db_path=db_path,
         )
     requested_validations = validations or ["git_diff_check"]
@@ -411,7 +477,7 @@ def apply_execution_request(
     }
     if not all_passed:
         rollback = _apply_patch_bytes(patch_text, workspace_root=root, reverse=True)
-        return record_execution_application(
+        return _record_application_with_checkpoint(
             {
                 "request_id": request_id,
                 "request_status": ROLLED_BACK,
@@ -424,9 +490,10 @@ def apply_execution_request(
                 "git_evidence": {**git_evidence, "rollback": rollback},
                 "rollback_reason": "One or more approved validation presets failed.",
             },
+            stage="application_rolled_back",
             db_path=db_path,
         )
-    return record_execution_application(
+    return _record_application_with_checkpoint(
         {
             "request_id": request_id,
             "request_status": APPLIED_VALIDATED,
@@ -438,6 +505,7 @@ def apply_execution_request(
             "validation": {"pre_apply": revalidation, "presets": validation_results},
             "git_evidence": git_evidence,
         },
+        stage="application_validated",
         db_path=db_path,
     )
 
@@ -463,7 +531,7 @@ def rollback_execution_request(
     if not rollback["passed"]:
         raise ValueError(f"Rollback could not be applied: {rollback['details']}")
     application = request.get("application", {})
-    return record_execution_application(
+    return _record_application_with_checkpoint(
         {
             "request_id": request_id,
             "request_status": ROLLED_BACK,
@@ -476,6 +544,7 @@ def rollback_execution_request(
             "git_evidence": {**application.get("git_evidence", {}), "rollback": rollback},
             "rollback_reason": reason,
         },
+        stage="application_rolled_back",
         db_path=db_path,
     )
 

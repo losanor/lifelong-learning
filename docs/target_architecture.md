@@ -47,9 +47,12 @@ Primeiras telas previstas:
 
 ### M3 - Durable HITL
 
-- Checkpointer persistente.
-- Interrupt/resume para aprovacoes.
-- Recuperacao apos falha e fila de decisoes pendentes.
+- Checkpointer SQLite append-only para workflow de efeitos. (implementado local)
+- Interrupt/resume para aprovacoes e execucao controlada. (implementado local)
+- Recuperacao apos falha e fila de decisoes pendentes. (implementado local)
+
+No deployment distribuido, os mesmos estados devem migrar para Agent Server e
+PostgreSQL, incluindo checkpoints internos do grafo LangGraph.
 
 ### M4 - Interface propria
 

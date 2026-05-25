@@ -22,9 +22,11 @@ from app.operational_store import (
     baseline_snapshot,
     execution_request_snapshot,
     metrics_snapshot,
+    pending_work_snapshot,
     record_baseline_result,
     record_run,
     update_human_review,
+    workflow_checkpoint_snapshot,
 )
 from app.orchestrator import inspect_agent_output, update_orchestrator_checks
 from app.retry_policy import initialize_retry_state, resolve_retry_permission
@@ -515,6 +517,19 @@ class OperationalContractsTest(unittest.TestCase):
                 self.assertTrue(applied["effects_enabled"])
                 self.assertEqual(target.read_text(encoding="utf-8"), "# After\n\nContext.\n")
                 self.assertTrue(applied["application"]["validation"]["presets"][0]["passed"])
+                timeline = workflow_checkpoint_snapshot(thread_id="run_apply", db_path=db_path)
+                self.assertEqual(
+                    [event["stage"] for event in timeline["checkpoints"]],
+                    [
+                        "execution_request_created",
+                        "preparation_approval_decided",
+                        "candidate_patch_prepared",
+                        "apply_approval_decided",
+                        "application_validated",
+                    ],
+                )
+                pending = pending_work_snapshot(db_path)
+                self.assertEqual(pending["pending"][0]["next_action"], "Revisar entrega; commit/push manual ou rollback.")
 
                 rolled_back = rollback_execution_request(
                     request["request_id"],
@@ -525,6 +540,7 @@ class OperationalContractsTest(unittest.TestCase):
                 self.assertEqual(rolled_back["status"], "rolled_back")
                 self.assertFalse(rolled_back["effects_enabled"])
                 self.assertEqual(target.read_text(encoding="utf-8"), "# Before\n\nContext.\n")
+                self.assertEqual(pending_work_snapshot(db_path)["pending_count"], 0)
         finally:
             if db_path.exists():
                 db_path.unlink()
@@ -597,6 +613,8 @@ class OperationalContractsTest(unittest.TestCase):
                     "rolled_back_validation_failed",
                 )
                 self.assertEqual(target.read_text(encoding="utf-8"), "# Before\n\nContext.\n")
+                timeline = workflow_checkpoint_snapshot(thread_id="run_failed_apply", db_path=db_path)
+                self.assertEqual(timeline["checkpoints"][-1]["stage"], "application_rolled_back")
         finally:
             if db_path.exists():
                 db_path.unlink()
