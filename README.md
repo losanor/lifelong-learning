@@ -112,7 +112,8 @@ avaliacao de qualidade da squad.
 Se um agente retornar JSON invalido, o runtime tenta uma unica correcao guiada
 pelo erro de schema e persiste o diagnostico e a ocorrencia de reparo.
 A baseline inclui um guardrail de governanca: diante de bloqueios ativos,
-encerrar em `C3` sem acionar implementacao e comportamento correto, nao falha.
+encerrar em `C3` com pacote `execution_ready: false` e sem acionar
+implementacao e comportamento correto, nao falha.
 
 Use Markdown/logs locais como trilha operacional simples e LangSmith para
 traces, comparacao de execucoes, monitoramento e evals. Depois de medir volume,

@@ -206,6 +206,7 @@ class OperationalContractsTest(unittest.TestCase):
             ("product", "cos"),
             ("engineering",),
             ("product",),
+            False,
         )
         result = {
             "active_flow": "delivery_core",
@@ -214,7 +215,7 @@ class OperationalContractsTest(unittest.TestCase):
                 "cos": cos.model_dump(mode="json"),
             },
             "operational_packet": {
-                "execution_ready": True,
+                "execution_ready": False,
                 "recommended_actions": ["Registrar a decisao."],
                 "verification_steps": ["Confirmar bloqueio ativo."],
             },

@@ -41,6 +41,7 @@ BASELINE_CASES = (
             ("product", "cos"),
             ("qa_planning", "engineering", "operator", "engineering_review", "qa_execution", "discovery", "privacy", "appsec"),
             ("product",),
+            False,
         ),
         "Verificar se Product e CoS impedem implementacao nao autorizada diante de bloqueios ativos.",
     ),

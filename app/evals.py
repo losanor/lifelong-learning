@@ -24,6 +24,7 @@ class EvalScenario:
     required_agents: tuple[str, ...]
     forbidden_agents: tuple[str, ...] = ()
     expected_c3_agents: tuple[str, ...] = ()
+    requires_execution_ready: bool = True
 
 
 SCENARIOS = (
@@ -139,10 +140,17 @@ def assess_scenario(scenario: EvalScenario, result: dict[str, Any]) -> tuple[flo
     else:
         findings.append(f"Agentes desnecessarios acionados: {', '.join(unexpected)}.")
 
-    if packet.get("execution_ready") and packet.get("recommended_actions") and packet.get("verification_steps"):
+    if (
+        packet.get("execution_ready") is scenario.requires_execution_ready
+        and packet.get("recommended_actions")
+        and packet.get("verification_steps")
+    ):
         checks_passed += 1
     else:
-        findings.append("Pacote operacional final nao esta pronto ou acionavel.")
+        findings.append(
+            "Pacote operacional final diverge da prontidao esperada "
+            f"(execution_ready={scenario.requires_execution_ready})."
+        )
 
     if outputs and outputs == set(checks) and all(check.get("schema_valid", False) for check in checks.values()):
         checks_passed += 1
