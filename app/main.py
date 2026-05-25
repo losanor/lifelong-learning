@@ -7,6 +7,7 @@ from app.retry_policy import initialize_retry_state
 from app.run_registry import generate_run_id, append_run_start, append_run_end
 from app.observability import build_run_config
 from app.operational_store import metrics_snapshot, record_run
+from app.execution_engine import create_execution_request
 from app.intake import decide_intake
 from app.workspace_context import capture_workspace_context
 from app.project_scope import resolve_work_scope
@@ -112,6 +113,7 @@ Ressalva opcional:
         user_goal=user_goal,
         duration_ms=duration_ms,
     )
+    execution_request = create_execution_request(result, run_id=run_id)
     print("\nDEBUG KEYS:", result.keys())
 
     print("\n=== DISCOVERY ===\n")
@@ -159,6 +161,9 @@ Ressalva opcional:
 
     print("\n=== OPERATIONAL PACKET ===\n")
     print(result.get("operational_packet", ""))
+
+    print("\n=== EXECUTION REQUEST ===\n")
+    print(execution_request)
 
     print("\n=== COS DECISION ===\n")
     print(result.get("cos_decision", ""))

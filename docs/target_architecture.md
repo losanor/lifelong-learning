@@ -37,6 +37,8 @@ Primeiras telas previstas:
 
 ### M2 - Execution Engine
 
+- Fila persistente de pedidos e decisoes humanas em dry-run. (implementado)
+- Approval gate que impede efeitos antes da decisao. (implementado)
 - Escrita controlada no workspace.
 - Validacao automatica, diff e evidencias.
 - Matriz executavel de autorizacoes.

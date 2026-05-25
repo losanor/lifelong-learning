@@ -37,6 +37,7 @@ Camadas compartilhadas:
 - `docs/target_architecture.md`: stack alvo e roadmap da interface propria.
 - `app/project_scope.py`: namespace de projeto/iniciativa para memoria futura.
 - `app/execution_policy.py`: tiers, budgets e aprovacoes previstas.
+- `app/execution_engine.py`: fila de execucao e approval gate em modo dry-run.
 - `contracts.py`: CMO, Resumo Estruturado, Shared Memory e ECE.
 - `cmo_especializado.py`: factories de CMO para handoffs estruturados.
 - `app/intake.py`: politica de agentes fixos e sinais de especialistas sob demanda.
@@ -85,6 +86,20 @@ O runtime grava `data/squad_runtime.sqlite3` localmente. O banco nao entra no
 Git; ele serve para consultar volume, acionabilidade, C3, escaladas, duracao e
 resultados dos evals. Runs novos tambem registram `project_id`, `initiative_id`,
 namespace de memoria e tier/orcamento de execucao.
+
+Quando `app.main` conclui uma run, o Execution Engine registra uma solicitacao.
+Pacotes `execution_ready: true` ficam em `pending_approval`; pacotes bloqueados
+ficam em `not_actionable`. Nesta fase, aprovar apenas move o pedido para
+`approved_for_dry_run`: nenhuma escrita, validacao, acao Git ou push e
+executado automaticamente.
+
+Para consultar e decidir a fila local:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.review_execution list
+.\.venv\Scripts\python.exe -m app.review_execution approve <request_id> --by owner --notes "Preparar diff."
+.\.venv\Scripts\python.exe -m app.review_execution reject <request_id> --by owner --notes "Revisar escopo."
+```
 
 Para iniciar uma baseline real rastreada, primeiro configure chaves somente em
 `.env` (nunca em `.env.example`) e rode um piloto de baixo custo:
@@ -153,6 +168,8 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
   para auditoria e debug.
 - O SQLite registra runs e artefatos estruturados sem depender de parsing de
   logs Markdown.
+- O Execution Engine registra pedidos persistentes e decisoes humanas, sempre
+  em dry-run enquanto os efeitos no workspace ainda nao estiverem implementados.
 - O intake cria namespace deterministico por projeto/iniciativa e persiste uma
   politica de custo/aprovacao para a futura interface operacional.
 - Os evals cobrem feature, bugfix, documentacao, review, decisao, research,
@@ -170,6 +187,9 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
 - O `Workspace Context` informa refs e estado Git, mas nao executa alteracoes
   sozinho; implementation, docs e commits continuam dependendo do operador
   que aplicar o pacote operacional.
+- A aprovacao atual audita intencao e libera somente dry-run; escrita
+  controlada, diff automatico e execucao apos aprovacao pertencem ao proximo
+  incremento do Execution Engine.
 - O namespace ja e registrado, mas os arquivos de memoria atuais ainda
   precisam ser migrados para armazenamento particionado por iniciativa.
 - Validacao automatica de performance do modelo depende do provedor real,

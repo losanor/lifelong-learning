@@ -1,4 +1,4 @@
-"""Persistencia SQLite para runs, artefatos e metricas operacionais."""
+"""Persistencia SQLite para runs, artefatos, aprovacoes e metricas operacionais."""
 
 from __future__ import annotations
 
@@ -103,6 +103,37 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 human_notes TEXT,
                 PRIMARY KEY (baseline_id, scenario_id)
             );
+
+            CREATE TABLE IF NOT EXISTS execution_requests (
+                request_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                project_id TEXT NOT NULL DEFAULT '',
+                initiative_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                execution_mode TEXT NOT NULL,
+                effects_enabled INTEGER NOT NULL DEFAULT 0,
+                status_reason TEXT NOT NULL DEFAULT '',
+                approval_required INTEGER NOT NULL DEFAULT 1,
+                requested_effects_json TEXT NOT NULL,
+                target_refs_json TEXT NOT NULL,
+                actions_json TEXT NOT NULL,
+                verification_steps_json TEXT NOT NULL,
+                policy_json TEXT NOT NULL,
+                packet_json TEXT NOT NULL,
+                FOREIGN KEY (run_id) REFERENCES runs(run_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS execution_approvals (
+                approval_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                decided_at TEXT NOT NULL,
+                decision TEXT NOT NULL CHECK (decision IN ('approved', 'rejected')),
+                decided_by TEXT NOT NULL,
+                notes TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (request_id) REFERENCES execution_requests(request_id)
+            );
             """
         )
         baseline_columns = {
@@ -144,6 +175,19 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
             if column_name not in run_columns:
                 connection.execute(
                     f"ALTER TABLE runs ADD COLUMN {column_name} {column_type}"
+                )
+        request_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(execution_requests)").fetchall()
+        }
+        request_migrations = {
+            "effects_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "status_reason": "TEXT NOT NULL DEFAULT ''",
+        }
+        for column_name, column_type in request_migrations.items():
+            if column_name not in request_columns:
+                connection.execute(
+                    f"ALTER TABLE execution_requests ADD COLUMN {column_name} {column_type}"
                 )
 
 
@@ -290,6 +334,147 @@ def record_eval_result(
         )
 
 
+def record_execution_request(
+    request: dict[str, Any],
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> None:
+    initialize_schema(db_path)
+    now = datetime.now(timezone.utc).isoformat()
+    with _connection(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO execution_requests (
+                request_id, run_id, created_at, updated_at, project_id,
+                initiative_id, status, execution_mode, effects_enabled,
+                status_reason, approval_required,
+                requested_effects_json, target_refs_json, actions_json,
+                verification_steps_json, policy_json, packet_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(request_id) DO UPDATE SET
+                updated_at=excluded.updated_at,
+                project_id=excluded.project_id,
+                initiative_id=excluded.initiative_id,
+                status=CASE
+                    WHEN execution_requests.status IN ('approved_for_dry_run', 'rejected')
+                    THEN execution_requests.status
+                    ELSE excluded.status
+                END,
+                execution_mode=excluded.execution_mode,
+                effects_enabled=excluded.effects_enabled,
+                status_reason=excluded.status_reason,
+                approval_required=excluded.approval_required,
+                requested_effects_json=excluded.requested_effects_json,
+                target_refs_json=excluded.target_refs_json,
+                actions_json=excluded.actions_json,
+                verification_steps_json=excluded.verification_steps_json,
+                policy_json=excluded.policy_json,
+                packet_json=excluded.packet_json
+            """,
+            (
+                request["request_id"],
+                request["run_id"],
+                now,
+                now,
+                request.get("project_id", ""),
+                request.get("initiative_id", ""),
+                request["status"],
+                request["execution_mode"],
+                int(request.get("effects_enabled", False)),
+                request.get("status_reason", ""),
+                int(request.get("approval_required", False)),
+                json.dumps(request.get("requested_effects", []), ensure_ascii=False),
+                json.dumps(request.get("target_refs", []), ensure_ascii=False),
+                json.dumps(request.get("recommended_actions", []), ensure_ascii=False),
+                json.dumps(request.get("verification_steps", []), ensure_ascii=False),
+                json.dumps(request.get("execution_policy", {}), ensure_ascii=False),
+                json.dumps(request.get("operational_packet", {}), ensure_ascii=False),
+            ),
+        )
+
+
+def record_execution_decision(
+    request_id: str,
+    *,
+    decision: str,
+    decided_by: str,
+    notes: str = "",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    if decision not in {"approved", "rejected"}:
+        raise ValueError("Execution decision must be approved or rejected.")
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        request = connection.execute(
+            "SELECT status FROM execution_requests WHERE request_id=?",
+            (request_id,),
+        ).fetchone()
+        if request is None:
+            raise ValueError("Execution request not found.")
+        if request["status"] != "pending_approval":
+            raise ValueError("Only pending execution requests can be decided.")
+        status = "approved_for_dry_run" if decision == "approved" else "rejected"
+        now = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            """
+            INSERT INTO execution_approvals (
+                request_id, decided_at, decision, decided_by, notes
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (request_id, now, decision, decided_by, notes),
+        )
+        connection.execute(
+            """
+            UPDATE execution_requests
+            SET status=?, updated_at=?
+            WHERE request_id=?
+            """,
+            (status, now, request_id),
+        )
+    return execution_request_snapshot(request_id=request_id, db_path=db_path)["requests"][0]
+
+
+def execution_request_snapshot(
+    *,
+    request_id: str | None = None,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        if request_id:
+            rows = connection.execute(
+                "SELECT * FROM execution_requests WHERE request_id=?",
+                (request_id,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT * FROM execution_requests ORDER BY created_at DESC"
+            ).fetchall()
+        requests = [dict(row) for row in rows]
+        for request in requests:
+            approval_rows = connection.execute(
+                """
+                SELECT decision, decided_at, decided_by, notes
+                FROM execution_approvals
+                WHERE request_id=?
+                ORDER BY approval_id ASC
+                """,
+                (request["request_id"],),
+            ).fetchall()
+            request["approval_required"] = bool(request["approval_required"])
+            request["effects_enabled"] = bool(request["effects_enabled"])
+            request["requested_effects"] = json.loads(request.pop("requested_effects_json"))
+            request["target_refs"] = json.loads(request.pop("target_refs_json"))
+            request["recommended_actions"] = json.loads(request.pop("actions_json"))
+            request["verification_steps"] = json.loads(
+                request.pop("verification_steps_json")
+            )
+            request["execution_policy"] = json.loads(request.pop("policy_json"))
+            request["operational_packet"] = json.loads(request.pop("packet_json"))
+            request["approvals"] = [dict(row) for row in approval_rows]
+    return {"request_count": len(requests), "requests": requests}
+
+
 def record_baseline_result(
     *,
     baseline_id: str,
@@ -407,6 +592,14 @@ def metrics_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
             ORDER BY run_count DESC, execution_tier ASC
             """
         ).fetchall()
+        request_rows = connection.execute(
+            """
+            SELECT status, COUNT(*) AS request_count
+            FROM execution_requests
+            GROUP BY status
+            ORDER BY status ASC
+            """
+        ).fetchall()
 
     run_count = totals["run_count"]
     return {
@@ -431,6 +624,13 @@ def metrics_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
                 "average_duration_ms": round(row["average_duration_ms"] or 0, 2),
             }
             for row in tier_rows
+        ],
+        "execution_requests": [
+            {
+                "status": row["status"],
+                "request_count": row["request_count"],
+            }
+            for row in request_rows
         ],
     }
 

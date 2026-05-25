@@ -8,8 +8,10 @@ from app.evals import EvalScenario, assess_scenario
 from app.mock_model import MockResponse
 from app.observability import build_run_config
 from app.project_scope import resolve_work_scope
+from app.execution_engine import create_execution_request, decide_execution_request
 from app.operational_store import (
     baseline_snapshot,
+    execution_request_snapshot,
     metrics_snapshot,
     record_baseline_result,
     record_run,
@@ -198,6 +200,110 @@ class OperationalContractsTest(unittest.TestCase):
 
         self.assertEqual(score, 10.0)
         self.assertFalse(findings)
+
+    def test_execution_request_requires_approval_before_workspace_effects(self):
+        db_path = Path("data") / "test_execution.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        try:
+            result = {
+                "work_scope": {
+                    "project_id": "squad",
+                    "initiative_id": "implement-engine",
+                },
+                "active_flow": "bugfix",
+                "execution_policy": {
+                    "execution_tier": "standard",
+                    "approval_required_actions": ["write_files", "git_commit", "git_push"],
+                },
+                "route_status": "ended",
+                "operational_packet": {
+                    "execution_ready": True,
+                    "target_refs": ["app/main.py"],
+                    "recommended_actions": ["Aplicar a mudanca aprovada."],
+                    "verification_steps": ["Executar testes."],
+                    "git_actions": ["Criar commit apos validacao."],
+                },
+                "structured_outputs": {},
+                "orchestrator_checks": {},
+            }
+            record_run(result, run_id="run_execution", user_goal="Corrigir falha.", db_path=db_path)
+
+            request = create_execution_request(result, run_id="run_execution", db_path=db_path)
+            approved = decide_execution_request(
+                request["request_id"],
+                decision="approved",
+                decided_by="owner",
+                notes="Aprovado para preparar diff.",
+                db_path=db_path,
+            )
+            create_execution_request(result, run_id="run_execution", db_path=db_path)
+            persisted = execution_request_snapshot(
+                request_id=request["request_id"],
+                db_path=db_path,
+            )["requests"][0]
+            metrics = metrics_snapshot(db_path)
+
+            self.assertEqual(request["status"], "pending_approval")
+            self.assertEqual(request["execution_mode"], "dry_run_only")
+            self.assertFalse(request["effects_enabled"])
+            self.assertEqual(request["requested_effects"], ["write_files", "git_commit"])
+            self.assertTrue(request["approval_required"])
+            self.assertEqual(approved["status"], "approved_for_dry_run")
+            self.assertEqual(persisted["status"], "approved_for_dry_run")
+            self.assertFalse(approved["effects_enabled"])
+            self.assertEqual(approved["approvals"][0]["decision"], "approved")
+            self.assertEqual(
+                metrics["execution_requests"],
+                [{"status": "approved_for_dry_run", "request_count": 1}],
+            )
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_execution_request_preserves_blocked_packet_as_non_actionable(self):
+        db_path = Path("data") / "test_blocked_execution.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        try:
+            result = {
+                "active_flow": "decision_only",
+                "execution_policy": {
+                    "execution_tier": "quick",
+                    "approval_required_actions": ["write_files"],
+                },
+                "route_status": "ended",
+                "operational_packet": {
+                    "execution_ready": False,
+                    "target_refs": ["decision-log"],
+                    "recommended_actions": ["Aguardar decisao humana."],
+                    "verification_steps": ["Confirmar bloqueio."],
+                    "git_actions": [],
+                },
+                "structured_outputs": {},
+                "orchestrator_checks": {},
+            }
+            record_run(result, run_id="run_blocked", user_goal="Avaliar bloqueio.", db_path=db_path)
+
+            request = create_execution_request(result, run_id="run_blocked", db_path=db_path)
+            stored = execution_request_snapshot(
+                request_id=request["request_id"],
+                db_path=db_path,
+            )["requests"][0]
+
+            self.assertEqual(stored["status"], "not_actionable")
+            self.assertFalse(stored["approval_required"])
+            self.assertEqual(stored["requested_effects"], [])
+            with self.assertRaises(ValueError):
+                decide_execution_request(
+                    request["request_id"],
+                    decision="approved",
+                    decided_by="owner",
+                    db_path=db_path,
+                )
+        finally:
+            if db_path.exists():
+                db_path.unlink()
 
     def test_eval_assessment_accepts_expected_governance_c3(self):
         product, _ = safe_parse_agent_output(
