@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+import sqlite3
 
 from app.evals import EvalScenario, assess_scenario
 from app.observability import build_run_config
@@ -166,6 +167,57 @@ class OperationalContractsTest(unittest.TestCase):
 
             self.assertEqual(report["scenario_count"], 1)
             self.assertEqual(report["results"][0]["human_average_score"], 8.8)
+            self.assertEqual(report["results"][0]["execution_status"], "completed")
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_baseline_result_migrates_legacy_schema_for_provider_failure(self):
+        db_path = Path("data") / "test_baseline_legacy.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        try:
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE baseline_reviews (
+                        baseline_id TEXT NOT NULL,
+                        scenario_id TEXT NOT NULL,
+                        executed_at TEXT NOT NULL,
+                        run_id TEXT NOT NULL,
+                        trace_id TEXT,
+                        automatic_score REAL NOT NULL,
+                        automatic_findings_json TEXT NOT NULL,
+                        human_correctness REAL,
+                        human_practical_utility REAL,
+                        human_scope_control REAL,
+                        human_next_step_clarity REAL,
+                        human_execution_confidence REAL,
+                        human_notes TEXT,
+                        PRIMARY KEY (baseline_id, scenario_id)
+                    )
+                    """
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            record_baseline_result(
+                baseline_id="baseline_failed",
+                scenario_id="provider_case",
+                run_id="failed_run",
+                trace_id="failed_trace",
+                automatic_score=0.0,
+                findings=["Provider unavailable."],
+                execution_status="provider_failed",
+                provider_error="credits unavailable",
+                db_path=db_path,
+            )
+            report = baseline_snapshot("baseline_failed", db_path)
+
+            self.assertEqual(report["results"][0]["execution_status"], "provider_failed")
+            self.assertEqual(report["results"][0]["provider_error"], "credits unavailable")
         finally:
             if db_path.exists():
                 db_path.unlink()

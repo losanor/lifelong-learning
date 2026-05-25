@@ -106,6 +106,8 @@ ativo, estado Git e tags `gate:<agente>` em cada execucao via
 `app/observability.py`.
 Na baseline real, o runtime tambem publica `baseline_auto_score` como feedback
 automatico do trace; a rubrica humana permanece no SQLite local.
+Se o provedor falhar antes de produzir artefato, a baseline registra
+`provider_failed` e exclui essa execucao da avaliacao de qualidade da squad.
 
 Use Markdown/logs locais como trilha operacional simples e LangSmith para
 traces, comparacao de execucoes, monitoramento e evals. Depois de medir volume,

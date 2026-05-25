@@ -6,6 +6,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
@@ -133,6 +134,15 @@ def _state(case: BaselineCase, run_id: str, workspace_root: str | Path) -> dict:
     }
 
 
+def _safe_error_text(error: Exception) -> str:
+    text = str(error).splitlines()[0][:500]
+    for env_var in ("ANTHROPIC_API_KEY", "LANGSMITH_API_KEY"):
+        secret = os.getenv(env_var, "").strip()
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    return text
+
+
 def run_baseline(
     *,
     limit: int = 3,
@@ -155,17 +165,47 @@ def run_baseline(
         trace_id = uuid4()
         intake = decide_intake(case.scenario.user_goal)
         started_at = perf_counter()
-        result = graph.invoke(
-            _state(case, run_id, workspace_root),
-            config=build_run_config(
+        try:
+            result = graph.invoke(
+                _state(case, run_id, workspace_root),
+                config=build_run_config(
+                    run_id=run_id,
+                    active_flow=intake.active_flow,
+                    mode="baseline-real",
+                    on_demand_agents=intake.on_demand_agents,
+                    git_repo=workspace.git_repo,
+                    trace_id=trace_id,
+                ),
+            )
+        except Exception as error:
+            duration_ms = round((perf_counter() - started_at) * 1000)
+            error_text = _safe_error_text(error)
+            finding = f"Provider/runtime failure before scenario completion: {error_text}"
+            record_baseline_result(
+                baseline_id=baseline_id,
+                scenario_id=case.scenario.scenario_id,
                 run_id=run_id,
-                active_flow=intake.active_flow,
-                mode="baseline-real",
-                on_demand_agents=intake.on_demand_agents,
-                git_repo=workspace.git_repo,
-                trace_id=trace_id,
-            ),
-        )
+                trace_id=str(trace_id),
+                automatic_score=0.0,
+                findings=[finding],
+                execution_status="provider_failed",
+                provider_error=error_text,
+                db_path=db_path,
+            )
+            reports.append(
+                {
+                    "scenario_id": case.scenario.scenario_id,
+                    "run_id": run_id,
+                    "trace_id": str(trace_id),
+                    "automatic_score": None,
+                    "automatic_findings": [finding],
+                    "duration_ms": duration_ms,
+                    "review_focus": case.review_focus,
+                    "feedback_sent": False,
+                    "execution_status": "provider_failed",
+                }
+            )
+            break
         duration_ms = round((perf_counter() - started_at) * 1000)
         score, findings = assess_scenario(case.scenario, result)
         record_run(result, run_id=run_id, user_goal=case.scenario.user_goal, duration_ms=duration_ms, db_path=db_path)
@@ -193,6 +233,7 @@ def run_baseline(
                 "duration_ms": duration_ms,
                 "review_focus": case.review_focus,
                 "feedback_sent": feedback_sent,
+                "execution_status": "completed",
                 "human_rubric": {
                     "correctness": None,
                     "practical_utility": None,
@@ -208,6 +249,8 @@ def run_baseline(
         "baseline_id": baseline_id,
         "mode": "real",
         "scenario_count": len(reports),
+        "completed_count": sum(1 for report in reports if report["execution_status"] == "completed"),
+        "provider_failed": any(report["execution_status"] == "provider_failed" for report in reports),
         "reports": reports,
         "sqlite_snapshot": baseline_snapshot(baseline_id, db_path),
     }

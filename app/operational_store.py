@@ -84,6 +84,8 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 executed_at TEXT NOT NULL,
                 run_id TEXT NOT NULL,
                 trace_id TEXT,
+                execution_status TEXT NOT NULL DEFAULT 'completed',
+                provider_error TEXT,
                 automatic_score REAL NOT NULL,
                 automatic_findings_json TEXT NOT NULL,
                 human_correctness REAL,
@@ -96,6 +98,17 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
             );
             """
         )
+        baseline_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(baseline_reviews)").fetchall()
+        }
+        if "execution_status" not in baseline_columns:
+            connection.execute(
+                "ALTER TABLE baseline_reviews "
+                "ADD COLUMN execution_status TEXT NOT NULL DEFAULT 'completed'"
+            )
+        if "provider_error" not in baseline_columns:
+            connection.execute("ALTER TABLE baseline_reviews ADD COLUMN provider_error TEXT")
 
 
 def record_run(
@@ -230,6 +243,8 @@ def record_baseline_result(
     trace_id: str,
     automatic_score: float,
     findings: list[str],
+    execution_status: str = "completed",
+    provider_error: str = "",
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> None:
     initialize_schema(db_path)
@@ -238,12 +253,14 @@ def record_baseline_result(
             """
             INSERT INTO baseline_reviews (
                 baseline_id, scenario_id, executed_at, run_id, trace_id,
-                automatic_score, automatic_findings_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                execution_status, provider_error, automatic_score, automatic_findings_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(baseline_id, scenario_id) DO UPDATE SET
                 executed_at=excluded.executed_at,
                 run_id=excluded.run_id,
                 trace_id=excluded.trace_id,
+                execution_status=excluded.execution_status,
+                provider_error=excluded.provider_error,
                 automatic_score=excluded.automatic_score,
                 automatic_findings_json=excluded.automatic_findings_json
             """,
@@ -253,6 +270,8 @@ def record_baseline_result(
                 datetime.now(timezone.utc).isoformat(),
                 run_id,
                 trace_id,
+                execution_status,
+                provider_error,
                 automatic_score,
                 json.dumps(findings, ensure_ascii=False),
             ),
