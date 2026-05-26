@@ -1,11 +1,13 @@
 # Deployment da squad
 
-## LangSmith Deployment
+## Deployment futuro
 
 O repositorio esta empacotado para Agent Server por `langgraph.json`. O arquivo
 nao referencia `.env`, porque credenciais nao sao publicadas no Git. Em um
 deployment gerenciado, o graph ID e `squad` e a infraestrutura de threads,
 runs, fila e persistencia e provisionada pelo LangSmith Deployment.
+
+Este e o caminho de upgrade, nao o modo ativo do piloto gratuito.
 
 Pre-requisitos:
 
@@ -41,15 +43,19 @@ O input minimo do grafo e:
 }
 ```
 
-## Operacao local e producao
+## Piloto ativo sem mensalidade
 
 `app.operational_api` e a console local de aprovacao e evidencias, apoiada em
 SQLite. Ela e apropriada para desenvolvimento, piloto individual e validacao
 do processo, vinculada a `127.0.0.1`.
 
-Para a primeira producao, a opcao selecionada e LangSmith Cloud gerenciado:
-o Agent Server, a fila e a persistencia PostgreSQL sao operados pelo servico,
-sem banco ou Redis mantidos pela squad. A migracao da fila
+O primeiro piloto opera localmente com LangGraph, SQLite, a console e o plano
+Developer gratuito do LangSmith para tracing amostrado. Consulte
+`docs/free_pilot.md`.
+
+Quando a migracao for justificada, a opcao selecionada para producao e
+LangSmith Cloud gerenciado: o Agent Server, a fila e a persistencia PostgreSQL
+sao operados pelo servico, sem banco ou Redis mantidos pela squad. A migracao da fila
 local de aprovacoes para endpoints autenticados do Agent Server depende da
 definicao do ambiente e da politica de identidade; nao deve ser improvisada
 antes disso.

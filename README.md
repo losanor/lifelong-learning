@@ -36,6 +36,7 @@ Camadas compartilhadas:
 
 - `docs/target_architecture.md`: stack alvo e roadmap da interface propria.
 - `langgraph.json` e `docs/deployment.md`: empacotamento e operacao no Agent Server.
+- `docs/free_pilot.md`: operacao local com LangSmith Developer e controle de custo.
 - `app/project_scope.py` e `app/scoped_storage.py`: memoria por projeto/iniciativa.
 - `app/execution_policy.py`: tiers, budgets e aprovacoes previstas.
 - `app/execution_engine.py`: fila de execucao e approval gate em modo dry-run.
@@ -141,10 +142,16 @@ carregado pelo LangSmith Deployment / Agent Server. O procedimento e as
 fronteiras entre a console SQLite local e a persistencia distribuida estao em
 [docs/deployment.md](docs/deployment.md).
 
-O primeiro deployment recomendado e Cloud gerenciado em tier de desenvolvimento
-para executar o smoke test, com `BG_JOB_ISOLATED_LOOPS=true` e concorrencia
-inicial conservadora. A promocao para producao vem apos verificar traces,
-custo e latencia do fluxo real.
+O modo ativo recomendado agora e o piloto local sem mensalidade descrito em
+[docs/free_pilot.md](docs/free_pilot.md): LangGraph local, console, SQLite e
+LangSmith Developer para tracing amostrado. O Cloud gerenciado permanece como
+upgrade futuro apos verificar uso, custo e necessidade de disponibilidade.
+
+Verifique a prontidao do piloto sem expor credenciais:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.pilot_readiness
+```
 
 Para iniciar uma baseline real rastreada, primeiro configure chaves somente em
 `.env` (nunca em `.env.example`) e rode um piloto de baixo custo:
@@ -187,6 +194,8 @@ implementacao e comportamento correto, nao falha.
 Use Markdown/logs locais como trilha operacional simples e LangSmith para
 traces, comparacao de execucoes, monitoramento e evals. Depois de medir volume,
 ajuste `LANGSMITH_TRACING_SAMPLING_RATE` para controlar custo de tracing.
+No piloto gratuito, use `0.2` para operacao diaria e reserve `1.0` para
+baselines curtas.
 
 LangSmith nao substitui as metricas de processo da squad, como output
 aproveitado, C3 por agente, retrabalho, bloqueio do Operator e aprovacao sem

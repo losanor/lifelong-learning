@@ -13,6 +13,11 @@ A arquitetura alvo usa:
 
 Open Agent Platform nao faz parte da arquitetura alvo porque foi descontinuado.
 
+Durante o piloto sem mensalidade, LangGraph, SQLite e console rodam localmente,
+com LangSmith Developer apenas para observabilidade amostrada. O deployment
+Cloud e PostgreSQL gerenciado entram quando a demanda operacional justificar o
+plano pago.
+
 ## Principio de interface
 
 A propria squad pode construir a interface operacional, depois que os contratos

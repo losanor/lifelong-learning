@@ -183,6 +183,11 @@ def build_operational_packet(
     artifact = response.envelope.operational_artifact
     workspace = state.get("workspace_context", {})
     artifacts = sorted({*state.get("structured_outputs", {}).keys(), "cos"})
+    governance_blocked = decision in {"NO_GO", "ESCALATE_TO_HUMAN"} or route_action == "ESCALATE_HUMAN"
+    execution_ready = artifact.execution_ready and not governance_blocked
+    human_checkpoint = artifact.human_checkpoint
+    if governance_blocked and not human_checkpoint:
+        human_checkpoint = "Aguardando decisao humana ou resolucao do bloqueio do CoS."
     return {
         "active_flow": state.get("active_flow", ""),
         "project_id": state.get("project_id", ""),
@@ -200,8 +205,9 @@ def build_operational_packet(
         "verification_steps": artifact.verification_steps,
         "git_actions": artifact.git_actions if workspace.get("git_repo", False) else [],
         "documentation_actions": artifact.documentation_actions,
-        "execution_ready": artifact.execution_ready,
-        "human_checkpoint": artifact.human_checkpoint,
+        "governance_blocked": governance_blocked,
+        "execution_ready": execution_ready,
+        "human_checkpoint": human_checkpoint,
         "supporting_artifacts": artifacts,
     }
 

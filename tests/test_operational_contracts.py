@@ -7,8 +7,10 @@ import tempfile
 import threading
 import urllib.error
 import urllib.request
+from unittest.mock import patch
 
 import app.graph as graph_module
+import app.pilot_readiness as pilot_readiness_module
 from app.evals import EvalScenario, assess_scenario
 from app.mock_model import MockResponse
 from app.observability import build_run_config
@@ -49,6 +51,50 @@ from contracts import ECE, Fase, SharedMemory
 
 
 class OperationalContractsTest(unittest.TestCase):
+    def test_free_pilot_readiness_accepts_real_traced_sampled_operation(self):
+        with (
+            patch.object(pilot_readiness_module, "USE_MOCK_MODEL", False),
+            patch.object(pilot_readiness_module, "ANTHROPIC_API_KEY", "configured"),
+            patch.object(pilot_readiness_module, "langsmith_ready", return_value=True),
+            patch.object(pilot_readiness_module, "langsmith_enabled", return_value=True),
+            patch.dict("os.environ", {"LANGSMITH_TRACING_SAMPLING_RATE": "0.2"}),
+        ):
+            report = pilot_readiness_module.pilot_readiness()
+
+        self.assertTrue(report["ready_for_real_pilot"])
+        self.assertFalse(report["cost_controls"]["monthly_paid_seat_required"])
+        self.assertEqual(report["cost_controls"]["recommended_paid_trace_spend_limit_usd"], 0)
+        self.assertEqual(report["cost_controls"]["recommended_langsmith_trace_limit"], 5000)
+        self.assertEqual(report["findings"], [])
+
+    def test_cos_escalation_never_produces_execution_ready_packet(self):
+        envelope, _ = safe_parse_agent_output(
+            mock_agent_output(
+                "cos",
+                "Necessita decisao humana.",
+                ece=ECE.C2,
+                decision="ESCALATE_TO_HUMAN",
+                route_action="ESCALATE_HUMAN",
+            ),
+            "cos",
+        )
+        response = graph_module.ValidatedResponse(
+            raw_content="",
+            envelope=envelope,
+            validation_errors=[],
+        )
+
+        packet = graph_module.build_operational_packet(
+            {"workspace_context": {"git_repo": True}, "structured_outputs": {}},
+            response,
+            decision="ESCALATE_TO_HUMAN",
+            route_action="ESCALATE_HUMAN",
+        )
+
+        self.assertTrue(packet["governance_blocked"])
+        self.assertFalse(packet["execution_ready"])
+        self.assertTrue(packet["human_checkpoint"])
+
     def test_structured_summary_check_detects_valid_c3(self):
         payload = mock_agent_output("discovery", "# Discovery", ece=ECE.C3)
         output, errors = safe_parse_agent_output(payload, "discovery")
