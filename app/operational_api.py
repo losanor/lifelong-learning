@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+import app.config  # Load local runtime settings before exposing dashboard status.
 from app.execution_engine import (
     apply_execution_request,
     decide_apply_execution,
@@ -21,11 +22,19 @@ from app.execution_engine import (
 from app.operational_store import (
     DEFAULT_DB_PATH,
     automation_demand_snapshot,
+    board_snapshot,
+    cost_snapshot,
+    create_parking_lot_item,
     execution_request_snapshot,
+    human_decision_snapshot,
     metrics_snapshot,
+    parking_lot_snapshot,
     pending_work_snapshot,
+    promote_parking_lot_item,
     record_automation_demand,
     recent_runs_snapshot,
+    respond_human_decision,
+    run_flow_snapshot,
     workflow_checkpoint_snapshot,
 )
 from app.scoped_storage import read_scoped_or_seed
@@ -91,12 +100,29 @@ class OperationsHandler(SimpleHTTPRequestHandler):
         if path == "/api/dashboard":
             self._json(
                 {
-                    "metrics": metrics_snapshot(self.db_path),
+                    "metrics": metrics_snapshot(self.db_path, include_validation=False),
                     "pending": pending_work_snapshot(self.db_path),
-                    "recent_runs": recent_runs_snapshot(db_path=self.db_path),
+                    "recent_runs": recent_runs_snapshot(limit=100, include_validation=False, db_path=self.db_path),
                     "demands": automation_demand_snapshot(self.db_path),
+                    "human_decisions": human_decision_snapshot(self.db_path),
                 }
             )
+            return
+        if path == "/api/board":
+            self._json(board_snapshot(self.db_path))
+            return
+        if path == "/api/costs":
+            self._json(cost_snapshot(self.db_path))
+            return
+        if path == "/api/decisions":
+            self._json(human_decision_snapshot(self.db_path))
+            return
+        if path == "/api/flow":
+            run_id = parse_qs(urlparse(self.path).query).get("run_id", [""])[0][:120]
+            self._json(run_flow_snapshot(run_id=run_id or None, db_path=self.db_path))
+            return
+        if path == "/api/ideas":
+            self._json(parking_lot_snapshot(self.db_path))
             return
         if path == "/api/requests":
             self._json(execution_request_snapshot(db_path=self.db_path))
@@ -141,10 +167,22 @@ class OperationsHandler(SimpleHTTPRequestHandler):
                 return
             self._start_manual_run()
             return
+        if path == "/api/ideas":
+            if self._reject_cross_origin_mutation():
+                return
+            self._create_idea()
+            return
         if path == "/api/hooks/n8n/demands":
             self._receive_automation_demand()
             return
         if self._reject_cross_origin_mutation():
+            return
+        parts = [unquote(part) for part in path.split("/") if part]
+        if len(parts) == 4 and parts[:2] == ["api", "decisions"] and parts[3] == "respond":
+            self._respond_human_decision(parts[2])
+            return
+        if len(parts) == 4 and parts[:2] == ["api", "ideas"] and parts[3] == "promote":
+            self._promote_idea(parts[2])
             return
         route = self._request_id_and_action()
         if route is None:
@@ -210,6 +248,32 @@ class OperationsHandler(SimpleHTTPRequestHandler):
             result = self.run_starter(self._read_json(), db_path=self.db_path)
             self._json(result, HTTPStatus.ACCEPTED)
         except (ValueError, json.JSONDecodeError) as error:
+            self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+
+    def _respond_human_decision(self, decision_id: str) -> None:
+        try:
+            payload = self._read_json()
+            result = respond_human_decision(
+                decision_id,
+                response=str(payload.get("response", "")),
+                resolution=str(payload.get("resolution", "")),
+                decided_by=str(payload.get("by", "owner")),
+                db_path=self.db_path,
+            )
+            self._json(result)
+        except (ValueError, json.JSONDecodeError) as error:
+            self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+
+    def _create_idea(self) -> None:
+        try:
+            self._json(create_parking_lot_item(self._read_json(), db_path=self.db_path), HTTPStatus.CREATED)
+        except (ValueError, json.JSONDecodeError) as error:
+            self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+
+    def _promote_idea(self, idea_id: str) -> None:
+        try:
+            self._json(promote_parking_lot_item(idea_id, db_path=self.db_path))
+        except ValueError as error:
             self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
 
     def _receive_automation_demand(self) -> None:

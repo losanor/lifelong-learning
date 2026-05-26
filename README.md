@@ -131,6 +131,17 @@ para os dois approvals existentes antes de qualquer escrita. O limite exibido
 e orcamento operacional estimado, nao trava de cobranca do provedor do modelo.
 A API rejeita mutacoes originadas por paginas web externas ao host local.
 
+A console operacional inclui:
+
+- `Board`: kanban de entradas, execucao, decisoes humanas, aprovacoes e entregas.
+- `Fluxo`: sequencia visual dos agentes acionados em cada run.
+- `Decisoes`: escaladas pendentes com resposta e direcao registradas pelo humano.
+- `Custos`: orcamento maximo estimado por tier e projeto, incluindo o subtotal de validacoes identificadas; custo real permanece no LangSmith.
+- `Ideias`: parking lot que promove candidatos para a inbox, sem auto-executar agentes.
+
+Runs identificadas como suites `eval-*` e `baseline-*` alimentam custos e qualidade, mas ficam
+fora da inbox, do board e da fila de decisao do dia a dia.
+
 ## Automacao com n8n
 
 O n8n fica restrito a entrada de demandas. Configure `SQUAD_WEBHOOK_TOKEN` no

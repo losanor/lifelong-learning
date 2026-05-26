@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Squad Operations</title>
-  <link rel="stylesheet" href="/styles.css?v=2">
+  <link rel="stylesheet" href="/styles.css?v=3">
 </head>
 <body>
   <header class="topbar">
@@ -15,152 +15,173 @@
         <p id="system-status">Conectando...</p>
       </div>
     </div>
-    <div class="topbar-actions">
-      <button class="icon-button" id="refresh" type="button" title="Atualizar fila" aria-label="Atualizar fila">&#8635;</button>
-    </div>
+    <button class="icon-button" id="refresh" type="button" title="Atualizar" aria-label="Atualizar">&#8635;</button>
   </header>
 
-  <main class="workspace">
-    <aside class="sidebar" aria-label="Fila de aprovacoes">
-      <div class="section-head">
-        <h2>Pendencias</h2>
-        <span class="count" id="pending-count">0</span>
-      </div>
-      <nav class="segments" aria-label="Filtro de fila">
-        <button type="button" class="segment active" data-filter="pending">Pendentes</button>
-        <button type="button" class="segment" data-filter="all">Todas</button>
-      </nav>
-      <div class="request-list" id="request-list"></div>
-      <div class="subqueue">
-        <div class="section-head">
-          <h2>Demandas externas</h2>
-          <span class="count" id="demand-count">0</span>
-        </div>
-        <div class="demand-list" id="demand-list"></div>
-      </div>
-    </aside>
+  <div class="app-shell">
+    <nav class="primary-nav" aria-label="Areas de operacao">
+      <button class="nav-item active" type="button" data-view="inbox"><span class="nav-icon">I</span>Inbox</button>
+      <button class="nav-item" type="button" data-view="board"><span class="nav-icon">B</span>Board</button>
+      <button class="nav-item" type="button" data-view="flow"><span class="nav-icon">F</span>Fluxo</button>
+      <button class="nav-item" type="button" data-view="decisions"><span class="nav-icon">D</span>Decisoes <span class="nav-count" id="decision-badge">0</span></button>
+      <button class="nav-item" type="button" data-view="costs"><span class="nav-icon">$</span>Custos</button>
+      <button class="nav-item" type="button" data-view="ideas"><span class="nav-icon">+</span>Ideias</button>
+    </nav>
 
-    <section class="main-panel">
-      <section class="intake-panel" aria-labelledby="new-run-title">
-        <div class="section-head">
-          <h2 id="new-run-title">Nova demanda</h2>
-          <span class="muted">Execucao supervisionada</span>
-        </div>
-        <form id="run-form">
-          <label class="objective-field">
-            <span>Objetivo</span>
-            <textarea id="run-goal" required maxlength="4000" placeholder="Ex.: revisar o fluxo de cadastro e propor uma correcao para validacao."></textarea>
-          </label>
-          <div class="intake-fields">
-            <label class="field">
-              <span>Projeto</span>
-              <input id="run-project" type="text" placeholder="cliente-produto">
-            </label>
-            <label class="field">
-              <span>Iniciativa</span>
-              <input id="run-initiative" type="text" placeholder="cadastro-v1">
-            </label>
-            <label class="field workspace-field">
-              <span>Workspace</span>
-              <input id="run-workspace" type="text" value=".">
-            </label>
-            <button class="action preview-action" type="submit">Calcular rota</button>
+    <main class="content">
+      <section class="app-view active" id="view-inbox" aria-labelledby="inbox-title">
+        <header class="page-header">
+          <div>
+            <h2 id="inbox-title">Inbox operacional</h2>
+            <p>Demandas, approvals e execucao supervisionada</p>
           </div>
-        </form>
-        <div class="intake-preview" id="intake-preview" hidden>
-          <div class="preview-summary">
-            <div>
-              <span>Fluxo</span>
-              <strong id="preview-flow"></strong>
+        </header>
+        <section class="intake-panel panel" aria-labelledby="new-run-title">
+          <div class="section-head">
+            <h3 id="new-run-title">Nova demanda</h3>
+            <span class="pill neutral">Supervisionada</span>
+          </div>
+          <form id="run-form">
+            <label class="objective-field">
+              <span>Objetivo</span>
+              <textarea id="run-goal" required maxlength="4000" placeholder="Ex.: corrigir a tela de cadastro e validar a regressao."></textarea>
+            </label>
+            <div class="intake-fields">
+              <label class="field"><span>Projeto</span><input id="run-project" type="text" placeholder="cliente-produto"></label>
+              <label class="field"><span>Iniciativa</span><input id="run-initiative" type="text" placeholder="cadastro-v1"></label>
+              <label class="field workspace-field"><span>Workspace</span><input id="run-workspace" type="text" value="."></label>
+              <button class="action" type="submit">Calcular rota</button>
             </div>
-            <div>
-              <span>Tier</span>
-              <strong id="preview-tier"></strong>
+          </form>
+          <div class="intake-preview" id="intake-preview" hidden>
+            <div class="preview-summary">
+              <div><span>Fluxo</span><strong id="preview-flow"></strong></div>
+              <div><span>Tier</span><strong id="preview-tier"></strong></div>
+              <div><span>Orcamento</span><strong id="preview-budget"></strong></div>
+              <div><span>Agentes</span><strong id="preview-agents"></strong></div>
             </div>
-            <div>
-              <span>Limite estimado</span>
-              <strong id="preview-budget"></strong>
-            </div>
-            <div>
-              <span>Agentes</span>
-              <strong id="preview-agents"></strong>
+            <p class="preview-note" id="preview-note"></p>
+            <div class="launch-row">
+              <label class="checkbox cost-check"><input id="confirm-cost" type="checkbox"> Confirmo esta run com modelo real.</label>
+              <button class="action primary" id="start-run" type="button" disabled>Iniciar run</button>
             </div>
           </div>
-          <p class="preview-note" id="preview-note"></p>
-          <div class="launch-row">
-            <label class="checkbox cost-check">
-              <input id="confirm-cost" type="checkbox">
-              Confirmo o tier e autorizo esta run com modelo real.
-            </label>
-            <button class="action primary" id="start-run" type="button" disabled>Iniciar run</button>
-          </div>
+        </section>
+        <div class="metrics" id="metrics" aria-label="Metricas"></div>
+        <div class="inbox-grid">
+          <section class="panel queue-panel">
+            <div class="section-head">
+              <h3>Approvals</h3>
+              <span class="count" id="pending-count">0</span>
+            </div>
+            <nav class="segments" aria-label="Filtro de approvals">
+              <button type="button" class="segment active" data-filter="pending">Pendentes</button>
+              <button type="button" class="segment" data-filter="all">Todas</button>
+            </nav>
+            <div class="request-list" id="request-list"></div>
+            <div class="subqueue">
+              <div class="section-head"><h3>Entradas externas</h3><span class="count" id="demand-count">0</span></div>
+              <div class="demand-list" id="demand-list"></div>
+            </div>
+          </section>
+          <section class="detail-column">
+            <div class="empty-detail panel" id="empty-detail">
+              <h3>Nenhum approval selecionado</h3>
+              <p>Selecione uma solicitacao da fila.</p>
+            </div>
+            <article class="request-detail panel" id="request-detail" hidden>
+              <header class="detail-header">
+                <div><p class="eyebrow" id="detail-scope"></p><h3 id="detail-title"></h3></div>
+                <span class="status" id="detail-status"></span>
+              </header>
+              <p class="reason" id="detail-reason"></p>
+              <div class="detail-grid">
+                <section class="block">
+                  <h4>Alvos autorizados</h4><div class="tags" id="target-refs"></div>
+                  <h4>Acoes propostas</h4><ul id="recommended-actions"></ul>
+                  <h4>Verificacao</h4><ul id="verification-steps"></ul>
+                </section>
+                <section class="block">
+                  <h4>Timeline</h4><ol class="timeline" id="timeline"></ol>
+                </section>
+              </div>
+              <section class="diff-panel">
+                <div class="section-head"><h4>Patch candidato</h4><span id="patch-result" class="muted"></span></div>
+                <label class="sr-only" for="patch-text">Diff unificado</label>
+                <textarea id="patch-text" spellcheck="false" placeholder="Diff unificado aprovado para validacao."></textarea>
+                <div class="control-row">
+                  <label class="field"><span>Workspace</span><input id="workspace-root" type="text" value="."></label>
+                  <label class="checkbox"><input id="validate-compile" type="checkbox"> Python compile</label>
+                  <label class="checkbox"><input id="validate-tests" type="checkbox"> Unit tests</label>
+                </div>
+                <div class="actions" id="actions"></div>
+              </section>
+              <section class="evidence" id="evidence" hidden><h4>Evidencias</h4><pre id="evidence-content"></pre></section>
+              <section class="evidence" id="memory" hidden><h4>Memoria da iniciativa</h4><pre id="memory-content"></pre></section>
+            </article>
+          </section>
+          <aside class="panel recent-panel" aria-label="Runs recentes">
+            <div class="section-head"><h3>Runs recentes</h3></div>
+            <div id="run-list" class="run-list"></div>
+          </aside>
         </div>
       </section>
-      <div class="metrics" id="metrics" aria-label="Metricas"></div>
-      <div class="empty-detail" id="empty-detail">
-        <h2>Nenhuma solicitacao selecionada</h2>
-        <p>Aguardando decisao operacional.</p>
-      </div>
-      <article class="request-detail" id="request-detail" hidden>
-        <header class="detail-header">
-          <div>
-            <p class="eyebrow" id="detail-scope"></p>
-            <h2 id="detail-title"></h2>
-          </div>
-          <span class="status" id="detail-status"></span>
+
+      <section class="app-view" id="view-board" aria-labelledby="board-title">
+        <header class="page-header"><div><h2 id="board-title">Board</h2><p>Trabalho em curso por estado operacional</p></div></header>
+        <div class="kanban" id="kanban"></div>
+      </section>
+
+      <section class="app-view" id="view-flow" aria-labelledby="flow-title">
+        <header class="page-header flow-header">
+          <div><h2 id="flow-title">Fluxo da run</h2><p>Agentes executados e passagens de contexto</p></div>
+          <label class="select-field"><span>Run</span><select id="flow-run-select"></select></label>
         </header>
-        <p class="reason" id="detail-reason"></p>
-        <div class="detail-grid">
-          <section class="block">
-            <h3>Alvos autorizados</h3>
-            <div class="tags" id="target-refs"></div>
-            <h3>Acoes propostas</h3>
-            <ul id="recommended-actions"></ul>
-            <h3>Verificacao</h3>
-            <ul id="verification-steps"></ul>
-          </section>
-          <section class="block">
-            <h3>Timeline</h3>
-            <ol class="timeline" id="timeline"></ol>
-          </section>
+        <section class="panel flow-canvas">
+          <div class="flow-meta" id="flow-meta"></div>
+          <div class="agent-flow" id="agent-flow"></div>
+        </section>
+      </section>
+
+      <section class="app-view" id="view-decisions" aria-labelledby="decisions-title">
+        <header class="page-header">
+          <div><h2 id="decisions-title">Decisoes humanas</h2><p>Escaladas aguardando direcionamento</p></div>
+          <span class="pill warning"><strong id="decision-pending-count">0</strong> pendentes</span>
+        </header>
+        <div class="decision-list" id="decision-list"></div>
+      </section>
+
+      <section class="app-view" id="view-costs" aria-labelledby="costs-title">
+        <header class="page-header"><div><h2 id="costs-title">Custos</h2><p>Orcamento operacional estimado</p></div><span class="pill neutral">Estimativa</span></header>
+        <div class="cost-overview" id="cost-overview"></div>
+        <div class="cost-grid">
+          <section class="panel chart-panel"><div class="section-head"><h3>Por tier</h3></div><div id="cost-by-tier"></div></section>
+          <section class="panel chart-panel"><div class="section-head"><h3>Por projeto</h3></div><div id="cost-by-project"></div></section>
         </div>
+      </section>
 
-        <section class="diff-panel">
-          <div class="section-head">
-            <h3>Patch candidato</h3>
-            <span id="patch-result" class="muted"></span>
-          </div>
-          <label class="sr-only" for="patch-text">Diff unificado</label>
-          <textarea id="patch-text" spellcheck="false" placeholder="Cole aqui um diff unificado aprovado para validacao."></textarea>
-          <div class="control-row">
-            <label class="field">
-              <span>Workspace</span>
-              <input id="workspace-root" type="text" value=".">
+      <section class="app-view" id="view-ideas" aria-labelledby="ideas-title">
+        <header class="page-header"><div><h2 id="ideas-title">Parking lot</h2><p>Oportunidades candidatas para avaliacao</p></div></header>
+        <div class="ideas-grid">
+          <form class="panel idea-form" id="idea-form">
+            <div class="section-head"><h3>Registrar ideia</h3></div>
+            <label class="field full"><span>Titulo</span><input id="idea-title" required maxlength="240" type="text"></label>
+            <label class="objective-field"><span>Contexto e evidencia</span><textarea id="idea-context" required maxlength="4000"></textarea></label>
+            <div class="two-fields">
+              <label class="field"><span>Projeto</span><input id="idea-project" type="text"></label>
+              <label class="field"><span>Iniciativa</span><input id="idea-initiative" type="text"></label>
+            </div>
+            <label class="select-field full"><span>Prioridade</span>
+              <select id="idea-priority"><option value="later">Depois</option><option value="consider">Avaliar</option><option value="high">Alta</option></select>
             </label>
-            <label class="checkbox"><input id="validate-compile" type="checkbox"> Python compile</label>
-            <label class="checkbox"><input id="validate-tests" type="checkbox"> Unit tests</label>
-          </div>
-          <div class="actions" id="actions"></div>
-        </section>
-        <section class="evidence" id="evidence" hidden>
-          <h3>Evidencias</h3>
-          <pre id="evidence-content"></pre>
-        </section>
-        <section class="evidence" id="memory" hidden>
-          <h3>Memoria da iniciativa</h3>
-          <pre id="memory-content"></pre>
-        </section>
-      </article>
-    </section>
-
-    <aside class="activity" aria-label="Runs recentes">
-      <div class="section-head">
-        <h2>Runs recentes</h2>
-      </div>
-      <div id="run-list" class="run-list"></div>
-    </aside>
-  </main>
+            <button class="action primary" type="submit">Registrar</button>
+          </form>
+          <section class="idea-list" id="idea-list"></section>
+        </div>
+      </section>
+    </main>
+  </div>
   <div class="toast" id="toast" role="status" hidden></div>
-  <script defer src="/app.js?v=2"></script>
+  <script defer src="/app.js?v=3"></script>
 </body>
 </html>

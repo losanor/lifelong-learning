@@ -32,14 +32,22 @@ from app.execution_engine import (
     rollback_execution_request,
 )
 from app.operational_store import (
+    automation_demand_snapshot,
     baseline_snapshot,
+    board_snapshot,
+    cost_snapshot,
+    create_parking_lot_item,
     execution_request_snapshot,
+    human_decision_snapshot,
     metrics_snapshot,
+    parking_lot_snapshot,
     pending_work_snapshot,
+    promote_parking_lot_item,
     record_baseline_result,
     record_run,
     record_run_started,
     recent_runs_snapshot,
+    run_flow_snapshot,
     update_run_status,
     update_human_review,
     workflow_checkpoint_snapshot,
@@ -687,6 +695,7 @@ class OperationalContractsTest(unittest.TestCase):
         if db_path.exists():
             db_path.unlink()
         server = None
+        thread = None
         try:
             result = {
                 "active_flow": "docs",
@@ -730,6 +739,8 @@ class OperationalContractsTest(unittest.TestCase):
             if server:
                 server.shutdown()
                 server.server_close()
+            if thread:
+                thread.join(timeout=2)
             if db_path.exists():
                 db_path.unlink()
 
@@ -859,6 +870,146 @@ class OperationalContractsTest(unittest.TestCase):
                 db_path=db_path,
             )
             self.assertEqual(recent_runs_snapshot(db_path=db_path)["runs"][0]["status"], "failed")
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_operational_views_surface_flow_cost_and_human_resolution(self):
+        from http.server import ThreadingHTTPServer
+
+        db_path = Path("data") / "test_operational_views.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        server = None
+        thread = None
+        try:
+            result = {
+                "active_flow": "decision_only",
+                "execution_policy": {"execution_tier": "quick", "max_cost_usd": 0.15},
+                "work_scope": {
+                    "project_id": "portal",
+                    "initiative_id": "pricing",
+                    "memory_namespace": "portal:pricing",
+                },
+                "route_status": "human_escalation",
+                "cos_decision": "ESCALATE_TO_HUMAN",
+                "route_decision": "human_escalation",
+                "human_escalation_created": True,
+                "human_escalation_reason": "Limite comercial precisa de aprovacao.",
+                "human_required_decision": "Aprovar ou ajustar faixa de preco.",
+                "operational_packet": {"execution_ready": False, "human_checkpoint": "Decisao pendente."},
+                "structured_outputs": {
+                    "product": {
+                        "summary": {"ece": "C2"},
+                        "operational_artifact": {"artifact_type": "brief", "execution_ready": False},
+                    },
+                    "cos": {
+                        "summary": {"ece": "C2"},
+                        "operational_artifact": {"artifact_type": "decision", "execution_ready": False},
+                    },
+                },
+                "orchestrator_checks": {},
+            }
+            record_run(result, run_id="run_decision", user_goal="Definir preco.", db_path=db_path)
+            validation_result = {
+                **result,
+                "work_scope": {
+                    "project_id": "squad-v5-lite",
+                    "initiative_id": "baseline-governanca",
+                    "memory_namespace": "squad-v5-lite:baseline-governanca",
+                },
+            }
+            record_run(validation_result, run_id="run_validation_decision", user_goal="Validar gate.", db_path=db_path)
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute("DELETE FROM human_decisions")
+                connection.commit()
+            finally:
+                connection.close()
+
+            decisions = human_decision_snapshot(db_path)
+            self.assertEqual(decisions["pending_count"], 1)
+            connection = sqlite3.connect(db_path)
+            try:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM human_decisions").fetchone()[0], 0)
+            finally:
+                connection.close()
+            self.assertEqual(board_snapshot(db_path)["columns"]["human_decision"][0]["run_id"], "run_decision")
+            self.assertEqual([agent["agent_name"] for agent in run_flow_snapshot(run_id="run_decision", db_path=db_path)["agents"]], ["product", "cos"])
+            costs = cost_snapshot(db_path)
+            self.assertEqual(costs["estimated_budget_usd"], 0.30)
+            self.assertEqual(costs["validation_estimated_budget_usd"], 0.15)
+            self.assertEqual(metrics_snapshot(db_path, include_validation=False)["run_count"], 1)
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(db_path))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            for route in ("board", "costs", "decisions", "flow?run_id=run_decision"):
+                with urllib.request.urlopen(f"{base_url}/api/{route}") as response:
+                    self.assertEqual(response.status, 200)
+            with urllib.request.urlopen(f"{base_url}/api/dashboard") as response:
+                dashboard = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(dashboard["metrics"]["run_count"], 1)
+            self.assertEqual(dashboard["recent_runs"]["runs"][0]["run_id"], "run_decision")
+            api_request = urllib.request.Request(
+                f"{base_url}/api/decisions/decision_run_decision/respond",
+                data=json.dumps(
+                    {
+                        "response": "Continuar com faixa inicial aprovada.",
+                        "resolution": "continue",
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(api_request) as response:
+                resolved = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(resolved["status"], "resolved")
+            self.assertEqual(human_decision_snapshot(db_path)["pending_count"], 0)
+            stale_validation_request = urllib.request.Request(
+                f"{base_url}/api/decisions/decision_run_validation_decision/respond",
+                data=json.dumps({"response": "Encerrar validacao.", "resolution": "close"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(stale_validation_request) as response:
+                validation_resolution = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(validation_resolution["status"], "resolved")
+            self.assertEqual(human_decision_snapshot(db_path)["decision_count"], 1)
+            timeline = workflow_checkpoint_snapshot(thread_id="run_decision", db_path=db_path)
+            self.assertEqual(timeline["checkpoints"][-1]["stage"], "human_decision_resolved")
+        finally:
+            if server:
+                server.shutdown()
+                server.server_close()
+            if thread:
+                thread.join(timeout=2)
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_parking_lot_promotes_idea_into_external_inbox(self):
+        db_path = Path("data") / "test_parking_lot.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        try:
+            idea = create_parking_lot_item(
+                {
+                    "title": "Adicionar exportacao CSV.",
+                    "context": "Sugerido durante revisao de operacao.",
+                    "project_id": "portal",
+                    "initiative_id": "relatorios",
+                    "priority": "consider",
+                },
+                db_path=db_path,
+            )
+            self.assertEqual(idea["status"], "candidate")
+            promoted = promote_parking_lot_item(idea["idea_id"], db_path=db_path)
+            self.assertEqual(promoted["status"], "promoted")
+            demands = automation_demand_snapshot(db_path)
+            self.assertEqual(demands["demands"][0]["source"], "parking_lot")
+            self.assertEqual(parking_lot_snapshot(db_path)["idea_count"], 1)
+            self.assertEqual(board_snapshot(db_path)["columns"]["planned"][0]["user_goal"], "Adicionar exportacao CSV.")
         finally:
             if db_path.exists():
                 db_path.unlink()

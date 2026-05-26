@@ -5,13 +5,19 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import sqlite3
 from typing import Any
+import uuid
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = BASE_DIR / "data" / "squad_runtime.sqlite3"
+
+
+def _is_validation_initiative(initiative_id: str) -> bool:
+    return initiative_id.startswith(("eval-", "baseline-"))
 
 
 def _connect(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -182,8 +188,43 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 metadata_json TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS human_decisions (
+                decision_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                project_id TEXT NOT NULL DEFAULT '',
+                initiative_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                source_agent TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                question TEXT NOT NULL,
+                recommendation TEXT NOT NULL,
+                response TEXT NOT NULL DEFAULT '',
+                resolution TEXT NOT NULL DEFAULT '',
+                decided_by TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (run_id) REFERENCES runs(run_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS parking_lot_items (
+                idea_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                title TEXT NOT NULL,
+                context TEXT NOT NULL,
+                source_run_id TEXT NOT NULL DEFAULT '',
+                project_id TEXT NOT NULL DEFAULT '',
+                initiative_id TEXT NOT NULL DEFAULT '',
+                priority TEXT NOT NULL DEFAULT 'later',
+                status TEXT NOT NULL DEFAULT 'candidate'
+            );
+
             CREATE INDEX IF NOT EXISTS idx_workflow_checkpoints_thread
                 ON workflow_checkpoints(thread_id, checkpoint_id);
+            CREATE INDEX IF NOT EXISTS idx_human_decisions_status
+                ON human_decisions(status, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_parking_lot_status
+                ON parking_lot_items(status, updated_at);
             """
         )
         baseline_columns = {
@@ -352,6 +393,38 @@ def record_run(
                     json.dumps(check.get("issues", []), ensure_ascii=False),
                     int(check.get("repair_attempted", False)),
                     json.dumps(output, ensure_ascii=False),
+                ),
+            )
+
+        if result.get("human_escalation_created", False):
+            now = datetime.now(timezone.utc).isoformat()
+            connection.execute(
+                """
+                INSERT INTO human_decisions (
+                    decision_id, run_id, created_at, updated_at, project_id,
+                    initiative_id, status, source_agent, reason, question,
+                    recommendation
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    updated_at=CASE
+                        WHEN human_decisions.status='pending' THEN excluded.updated_at
+                        ELSE human_decisions.updated_at
+                    END,
+                    reason=excluded.reason,
+                    question=excluded.question,
+                    recommendation=excluded.recommendation
+                """,
+                (
+                    f"decision_{run_id}",
+                    run_id,
+                    now,
+                    now,
+                    scope.get("project_id", result.get("project_id", "")),
+                    scope.get("initiative_id", result.get("initiative_id", "")),
+                    "CoS / Orchestrator",
+                    result.get("human_escalation_reason", "A squad solicitou decisao humana."),
+                    result.get("human_required_decision", "Definir o proximo passo desta demanda."),
+                    "Responder antes de permitir qualquer continuidade ou efeito.",
                 ),
             )
 
@@ -824,17 +897,20 @@ def pending_work_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, An
 def recent_runs_snapshot(
     *,
     limit: int = 20,
+    include_validation: bool = True,
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
     initialize_schema(db_path)
     safe_limit = max(1, min(limit, 100))
+    scope_filter = "" if include_validation else "WHERE initiative_id NOT LIKE 'eval-%' AND initiative_id NOT LIKE 'baseline-%'"
     with _connection(db_path) as connection:
         rows = connection.execute(
-            """
+            f"""
             SELECT run_id, created_at, project_id, initiative_id, user_goal,
                 active_flow, execution_tier, status, execution_ready,
                 agent_count, duration_ms
             FROM runs
+            {scope_filter}
             ORDER BY created_at DESC
             LIMIT ?
             """,
@@ -895,6 +971,347 @@ def automation_demand_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[st
     for demand in demands:
         demand["metadata"] = json.loads(demand.pop("metadata_json"))
     return {"demand_count": len(demands), "demands": demands}
+
+
+def human_decision_snapshot(
+    db_path: str | Path = DEFAULT_DB_PATH,
+    *,
+    include_validation: bool = False,
+) -> dict[str, Any]:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        legacy_rows = connection.execute(
+            """
+            SELECT run_id, created_at, project_id, initiative_id, cos_decision,
+                   route_decision, operational_packet_json
+            FROM runs
+            WHERE human_escalation_created=1
+              AND run_id NOT IN (SELECT run_id FROM human_decisions)
+            """
+        ).fetchall()
+        rows = connection.execute(
+            "SELECT * FROM human_decisions ORDER BY status='pending' DESC, updated_at DESC"
+        ).fetchall()
+    decisions = [
+        dict(row) for row in rows
+        if include_validation or not _is_validation_initiative(row["initiative_id"])
+    ]
+    for row in legacy_rows:
+        if not include_validation and _is_validation_initiative(row["initiative_id"]):
+            continue
+        packet = json.loads(row["operational_packet_json"] or "{}")
+        decisions.append(
+            {
+                "decision_id": f"decision_{row['run_id']}",
+                "run_id": row["run_id"],
+                "created_at": row["created_at"],
+                "updated_at": row["created_at"],
+                "project_id": row["project_id"],
+                "initiative_id": row["initiative_id"],
+                "status": "pending",
+                "source_agent": "CoS / Orchestrator",
+                "reason": f"Decisao {row['cos_decision'] or row['route_decision']} exige validacao humana.",
+                "question": packet.get("human_checkpoint") or "Definir o proximo passo desta demanda.",
+                "recommendation": "Responder antes de permitir continuidade ou efeitos.",
+                "response": "",
+                "resolution": "",
+                "decided_by": "",
+            }
+        )
+    decisions.sort(key=lambda item: (item["status"] == "pending", item["updated_at"]), reverse=True)
+    pending_count = sum(1 for item in decisions if item["status"] == "pending")
+    return {"decision_count": len(decisions), "pending_count": pending_count, "decisions": decisions}
+
+
+def respond_human_decision(
+    decision_id: str,
+    *,
+    response: str,
+    resolution: str,
+    decided_by: str = "owner",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    response = response.strip()
+    allowed_resolutions = {"continue", "request_revision", "close"}
+    if not response:
+        raise ValueError("Registre a decisao humana antes de concluir.")
+    if resolution not in allowed_resolutions:
+        raise ValueError("Resolucao humana invalida.")
+    initialize_schema(db_path)
+    now = datetime.now(timezone.utc).isoformat()
+    with _connection(db_path) as connection:
+        row = connection.execute(
+            "SELECT run_id, status FROM human_decisions WHERE decision_id=?",
+            (decision_id,),
+        ).fetchone()
+        if row is None:
+            legacy_run_id = decision_id.removeprefix("decision_")
+            if legacy_run_id == decision_id:
+                raise ValueError("Decisao humana nao encontrada.")
+            legacy = connection.execute(
+                """
+                SELECT run_id, created_at, project_id, initiative_id, cos_decision,
+                       route_decision, operational_packet_json
+                FROM runs
+                WHERE human_escalation_created=1 AND run_id=?
+                """,
+                (legacy_run_id,),
+            ).fetchone()
+            if legacy is None:
+                raise ValueError("Decisao humana nao encontrada.")
+            packet = json.loads(legacy["operational_packet_json"] or "{}")
+            connection.execute(
+                """
+                INSERT INTO human_decisions (
+                    decision_id, run_id, created_at, updated_at, project_id,
+                    initiative_id, status, source_agent, reason, question,
+                    recommendation
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+                """,
+                (
+                    decision_id,
+                    legacy["run_id"],
+                    legacy["created_at"],
+                    legacy["created_at"],
+                    legacy["project_id"],
+                    legacy["initiative_id"],
+                    "CoS / Orchestrator",
+                    f"Decisao {legacy['cos_decision'] or legacy['route_decision']} exige validacao humana.",
+                    packet.get("human_checkpoint") or "Definir o proximo passo desta demanda.",
+                    "Responder antes de permitir continuidade ou efeitos.",
+                ),
+            )
+            row = {"run_id": legacy["run_id"], "status": "pending"}
+        if row["status"] != "pending":
+            raise ValueError("A decisao humana ja foi respondida.")
+        connection.execute(
+            """
+            UPDATE human_decisions SET
+                updated_at=?, status='resolved', response=?, resolution=?, decided_by=?
+            WHERE decision_id=?
+            """,
+            (now, response[:4000], resolution, decided_by.strip()[:120] or "owner", decision_id),
+        )
+    record_workflow_checkpoint(
+        thread_id=row["run_id"],
+        run_id=row["run_id"],
+        stage="human_decision_resolved",
+        status=resolution,
+        payload={"decision_id": decision_id, "resolution": resolution, "decided_by": decided_by},
+        db_path=db_path,
+    )
+    return next(
+        item
+        for item in human_decision_snapshot(db_path, include_validation=True)["decisions"]
+        if item["decision_id"] == decision_id
+    )
+
+
+def run_flow_snapshot(
+    *,
+    run_id: str | None = None,
+    include_validation: bool = False,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        if not run_id:
+            latest = connection.execute(
+                """
+                SELECT run_id FROM runs
+                WHERE agent_count > 0
+                  AND (? OR (initiative_id NOT LIKE 'eval-%' AND initiative_id NOT LIKE 'baseline-%'))
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (include_validation,),
+            ).fetchone()
+            run_id = latest["run_id"] if latest else ""
+        run = connection.execute(
+            """
+            SELECT run_id, project_id, initiative_id, user_goal, active_flow,
+                   execution_tier, status, cos_decision, route_decision
+            FROM runs WHERE run_id=?
+            """,
+            (run_id,),
+        ).fetchone()
+        rows = connection.execute(
+            """
+            SELECT agent_name, ece, schema_valid, artifact_type, execution_ready
+            FROM agent_outputs WHERE run_id=? ORDER BY rowid ASC
+            """,
+            (run_id,),
+        ).fetchall()
+    agents = [dict(row) for row in rows]
+    links = [
+        {"from": agents[index]["agent_name"], "to": agents[index + 1]["agent_name"]}
+        for index in range(len(agents) - 1)
+    ]
+    return {"run": dict(run) if run else None, "agents": agents, "links": links}
+
+
+def cost_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT project_id, initiative_id, execution_tier, execution_policy_json,
+                   status, agent_count
+            FROM runs ORDER BY created_at DESC
+            """
+        ).fetchall()
+    by_tier: dict[str, dict[str, Any]] = {}
+    by_project: dict[str, dict[str, Any]] = {}
+    total_budget = 0.0
+    validation_budget = 0.0
+    validation_runs = 0
+    for row in rows:
+        policy = json.loads(row["execution_policy_json"] or "{}")
+        estimated = float(policy.get("max_cost_usd") or 0)
+        total_budget += estimated
+        if _is_validation_initiative(row["initiative_id"]):
+            validation_budget += estimated
+            validation_runs += 1
+        tier = row["execution_tier"] or "legacy"
+        tier_item = by_tier.setdefault(tier, {"tier": tier, "runs": 0, "estimated_budget_usd": 0.0})
+        tier_item["runs"] += 1
+        tier_item["estimated_budget_usd"] += estimated
+        project = row["project_id"] or "default"
+        project_item = by_project.setdefault(
+            project, {"project_id": project, "runs": 0, "estimated_budget_usd": 0.0}
+        )
+        project_item["runs"] += 1
+        project_item["estimated_budget_usd"] += estimated
+    try:
+        sampling_rate = float(os.getenv("LANGSMITH_TRACING_SAMPLING_RATE", "0") or 0)
+    except ValueError:
+        sampling_rate = 0.0
+    return {
+        "label": "Orcamento maximo estimado",
+        "total_runs": len(rows),
+        "estimated_budget_usd": round(total_budget, 2),
+        "validation_runs": validation_runs,
+        "validation_estimated_budget_usd": round(validation_budget, 2),
+        "real_cost_available": False,
+        "tracing_enabled": os.getenv("LANGSMITH_TRACING", "").lower() == "true",
+        "sampling_rate": sampling_rate,
+        "by_tier": sorted(by_tier.values(), key=lambda item: item["estimated_budget_usd"], reverse=True),
+        "by_project": sorted(by_project.values(), key=lambda item: item["estimated_budget_usd"], reverse=True)[:8],
+    }
+
+
+def board_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
+    runs = recent_runs_snapshot(limit=100, include_validation=False, db_path=db_path)["runs"]
+    requests = execution_request_snapshot(db_path=db_path)["requests"]
+    demands = automation_demand_snapshot(db_path)["demands"]
+    pending_decisions = {
+        item["run_id"] for item in human_decision_snapshot(db_path)["decisions"] if item["status"] == "pending"
+    }
+    request_by_run = {item["run_id"]: item["status"] for item in requests}
+    columns = {key: [] for key in ("planned", "in_progress", "human_decision", "approval", "done", "blocked")}
+    for demand in demands:
+        if demand["status"] == "queued_for_review":
+            columns["planned"].append(
+                {
+                    "run_id": demand["event_id"],
+                    "user_goal": demand["user_goal"],
+                    "project_id": demand["project_id"],
+                    "initiative_id": demand["initiative_id"],
+                    "status": demand["status"],
+                    "execution_tier": "entrada externa",
+                }
+            )
+    for run in runs:
+        status = run["status"]
+        request_status = request_by_run.get(run["run_id"], "")
+        card = {**run, "request_status": request_status}
+        if run["run_id"] in pending_decisions:
+            column = "human_decision"
+        elif request_status in {
+            "pending_approval", "approved_for_dry_run", "awaiting_patch",
+            "awaiting_apply_approval", "approved_for_apply", "applied_validated",
+        }:
+            column = "approval"
+        elif status in {"queued"}:
+            column = "planned"
+        elif status in {"running"}:
+            column = "in_progress"
+        elif status in {"failed"} or request_status in {"not_actionable", "rejected", "rolled_back"}:
+            column = "blocked"
+        else:
+            column = "done"
+        columns[column].append(card)
+    return {"columns": columns}
+
+
+def create_parking_lot_item(
+    payload: dict[str, Any],
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    title = str(payload.get("title", "")).strip()
+    context = str(payload.get("context", "")).strip()
+    if not title or not context:
+        raise ValueError("Titulo e contexto da ideia sao obrigatorios.")
+    priority = str(payload.get("priority", "later")).strip()
+    if priority not in {"later", "consider", "high"}:
+        raise ValueError("Prioridade da ideia invalida.")
+    item_id = f"idea_{uuid.uuid4().hex[:10]}"
+    now = datetime.now(timezone.utc).isoformat()
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO parking_lot_items (
+                idea_id, created_at, updated_at, title, context, source_run_id,
+                project_id, initiative_id, priority, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate')
+            """,
+            (
+                item_id, now, now, title[:240], context[:4000],
+                str(payload.get("source_run_id", "")).strip()[:120],
+                str(payload.get("project_id", "")).strip()[:120],
+                str(payload.get("initiative_id", "")).strip()[:120],
+                priority,
+            ),
+        )
+    return next(item for item in parking_lot_snapshot(db_path)["ideas"] if item["idea_id"] == item_id)
+
+
+def parking_lot_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        rows = connection.execute(
+            "SELECT * FROM parking_lot_items ORDER BY status='candidate' DESC, updated_at DESC"
+        ).fetchall()
+    return {"idea_count": len(rows), "ideas": [dict(row) for row in rows]}
+
+
+def promote_parking_lot_item(idea_id: str, *, db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        item = connection.execute(
+            "SELECT * FROM parking_lot_items WHERE idea_id=?",
+            (idea_id,),
+        ).fetchone()
+        if item is None:
+            raise ValueError("Ideia nao encontrada.")
+        if item["status"] != "candidate":
+            raise ValueError("A ideia ja foi promovida ou encerrada.")
+        now = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            "UPDATE parking_lot_items SET status='promoted', updated_at=? WHERE idea_id=?",
+            (now, idea_id),
+        )
+    record_automation_demand(
+        event_id=f"parking:{idea_id}",
+        source="parking_lot",
+        project_id=item["project_id"] or "default",
+        initiative_id=item["initiative_id"] or "default",
+        user_goal=item["title"],
+        metadata={"context": item["context"], "idea_id": idea_id},
+        db_path=db_path,
+    )
+    return next(item for item in parking_lot_snapshot(db_path)["ideas"] if item["idea_id"] == idea_id)
 
 
 def execution_request_snapshot(
@@ -1048,11 +1465,16 @@ def update_human_review(
             raise ValueError("Baseline scenario not found for human review.")
 
 
-def metrics_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
+def metrics_snapshot(
+    db_path: str | Path = DEFAULT_DB_PATH,
+    *,
+    include_validation: bool = True,
+) -> dict[str, Any]:
     initialize_schema(db_path)
+    scope_filter = "" if include_validation else "WHERE initiative_id NOT LIKE 'eval-%' AND initiative_id NOT LIKE 'baseline-%'"
     with _connection(db_path) as connection:
         totals = connection.execute(
-            """
+            f"""
             SELECT
                 COUNT(*) AS run_count,
                 COALESCE(AVG(agent_count), 0) AS average_agents_per_run,
@@ -1061,20 +1483,23 @@ def metrics_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
                 COALESCE(SUM(human_escalation_created), 0) AS escalation_count,
                 COALESCE(SUM(execution_ready), 0) AS execution_ready_count
             FROM runs
+            {scope_filter}
             """
         ).fetchone()
         flow_rows = connection.execute(
-            """
+            f"""
             SELECT active_flow, COUNT(*) AS run_count, AVG(agent_count) AS average_agents
             FROM runs
+            {scope_filter}
             GROUP BY active_flow
             ORDER BY run_count DESC, active_flow ASC
             """
         ).fetchall()
         tier_rows = connection.execute(
-            """
+            f"""
             SELECT execution_tier, COUNT(*) AS run_count, AVG(duration_ms) AS average_duration_ms
             FROM runs
+            {scope_filter}
             GROUP BY execution_tier
             ORDER BY run_count DESC, execution_tier ASC
             """

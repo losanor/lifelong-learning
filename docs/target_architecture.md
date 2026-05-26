@@ -24,13 +24,15 @@ A propria squad pode construir a interface operacional, depois que os contratos
 de execucao estiverem estaveis. A interface nao deve decidir regras centrais;
 ela deve operar o runtime.
 
-Primeiras telas previstas:
+Telas operacionais locais implementadas:
 
 - Caixa de entrada de demandas com `project_id` e `initiative_id`.
-- Run detail com fluxo, agentes acionados, tier, orcamento, custo e traces.
+- Board visual com trabalho a iniciar, em andamento, sob decisao humana, em aprovacao, concluido ou bloqueado.
+- Fluxo de cada run com os agentes acionados e seus artefatos/ECE.
+- Decisoes humanas pendentes com resposta registrada e retomada auditavel.
+- Custos com orcamento estimado agregado por tier/projeto e subtotal de validacoes identificadas; custo real e traces continuam no LangSmith.
+- Parking lot de ideias com promocao supervisionada para a caixa de entrada.
 - Approval inbox para editar, aprovar ou rejeitar efeitos antes de executar.
-- Delivery view com diff Git, testes, evidencias QA e artefatos.
-- Memory view separando decisoes, bloqueios e historico por iniciativa.
 
 ## Fases de implementacao
 
@@ -66,6 +68,9 @@ PostgreSQL, incluindo checkpoints internos do grafo LangGraph.
 - Console operacional local consumindo API do runtime. (implementado)
 - Aprovacoes, custo/tier, diffs, validacoes, timeline e runs recentes. (implementado)
 - Intake manual com previa deterministica de fluxo/custo e disparo supervisionado. (implementado local)
+- Board, fluxo entre agentes, fila de decisoes humanas e parking lot supervisionado. (implementado local)
+- Separacao de runs `eval-*`/`baseline-*` das filas diarias, preservando custo de validacao. (implementado local)
+- Integrar custo real e link direto do trace LangSmith por run. (pendente)
 - Substituir API local pelo Agent Server no deployment distribuido.
 
 ### M5 - Automacoes externas
