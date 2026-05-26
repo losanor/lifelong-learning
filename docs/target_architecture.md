@@ -65,6 +65,7 @@ PostgreSQL, incluindo checkpoints internos do grafo LangGraph.
 
 - Console operacional local consumindo API do runtime. (implementado)
 - Aprovacoes, custo/tier, diffs, validacoes, timeline e runs recentes. (implementado)
+- Intake manual com previa deterministica de fluxo/custo e disparo supervisionado. (implementado local)
 - Substituir API local pelo Agent Server no deployment distribuido.
 
 ### M5 - Automacoes externas

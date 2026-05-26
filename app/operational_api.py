@@ -29,6 +29,7 @@ from app.operational_store import (
     workflow_checkpoint_snapshot,
 )
 from app.scoped_storage import read_scoped_or_seed
+from app.run_service import enqueue_manual_run, preview_manual_run
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -39,6 +40,7 @@ MAX_BODY_BYTES = 1_100_000
 class OperationsHandler(SimpleHTTPRequestHandler):
     db_path: Path = DEFAULT_DB_PATH
     webhook_token: str = ""
+    run_starter = staticmethod(enqueue_manual_run)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(UI_DIR), **kwargs)
@@ -64,6 +66,16 @@ class OperationsHandler(SimpleHTTPRequestHandler):
         if not length:
             return {}
         return json.loads(self.rfile.read(length).decode("utf-8"))
+
+    def _reject_cross_origin_mutation(self) -> bool:
+        origin = self.headers.get("Origin", "").rstrip("/")
+        if not origin:
+            return False
+        expected_origin = f"http://{self.headers.get('Host', '')}".rstrip("/")
+        if hmac.compare_digest(origin, expected_origin):
+            return False
+        self._json({"error": "Cross-origin mutation is not allowed."}, HTTPStatus.FORBIDDEN)
+        return True
 
     def _request_id_and_action(self) -> tuple[str, str] | None:
         parts = [unquote(part) for part in urlparse(self.path).path.split("/") if part]
@@ -118,8 +130,21 @@ class OperationsHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path == "/api/hooks/n8n/demands":
+        path = urlparse(self.path).path
+        if path == "/api/intake/preview":
+            if self._reject_cross_origin_mutation():
+                return
+            self._preview_manual_run()
+            return
+        if path == "/api/runs":
+            if self._reject_cross_origin_mutation():
+                return
+            self._start_manual_run()
+            return
+        if path == "/api/hooks/n8n/demands":
             self._receive_automation_demand()
+            return
+        if self._reject_cross_origin_mutation():
             return
         route = self._request_id_and_action()
         if route is None:
@@ -174,6 +199,19 @@ class OperationsHandler(SimpleHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as error:
             self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
 
+    def _preview_manual_run(self) -> None:
+        try:
+            self._json(preview_manual_run(self._read_json()))
+        except (ValueError, json.JSONDecodeError) as error:
+            self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+
+    def _start_manual_run(self) -> None:
+        try:
+            result = self.run_starter(self._read_json(), db_path=self.db_path)
+            self._json(result, HTTPStatus.ACCEPTED)
+        except (ValueError, json.JSONDecodeError) as error:
+            self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+
     def _receive_automation_demand(self) -> None:
         if not self.webhook_token:
             self._json({"error": "Automation webhook is disabled."}, HTTPStatus.SERVICE_UNAVAILABLE)
@@ -202,12 +240,14 @@ class OperationsHandler(SimpleHTTPRequestHandler):
         return
 
 
-def make_handler(db_path: str | Path, *, webhook_token: str = ""):
+def make_handler(db_path: str | Path, *, webhook_token: str = "", run_starter=None):
     class BoundOperationsHandler(OperationsHandler):
         pass
 
     BoundOperationsHandler.db_path = Path(db_path)
     BoundOperationsHandler.webhook_token = webhook_token
+    if run_starter is not None:
+        BoundOperationsHandler.run_starter = staticmethod(run_starter)
     return BoundOperationsHandler
 
 

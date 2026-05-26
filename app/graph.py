@@ -349,26 +349,40 @@ def writing_node(state: SquadState):
 
 def ux_ui_node(state: SquadState):
     prompt = read_prompt("ux_ui.txt")
-    product = state.get("product_output", "")
+    delivery_context = (
+        state.get("product_output", "")
+        or state.get("engineering_output", "")
+        or state["user_goal"]
+    )
     run_id = state.get("run_id", "")
     response = invoke_validated("ux_ui",
         f"[[AGENT:UX_UI]]\n\n"
         f"{prompt}\n\n"
-        f"{cmo_block(state, 'ux_ui', 'Revisar experiencia e estados da entrega.', product, 'Gate UX/UI com criterios verificaveis, ECE e resumo.')}\n\n"
+        f"{cmo_block(state, 'ux_ui', 'Revisar experiencia e estados da entrega.', delivery_context, 'Gate UX/UI com criterios verificaveis, ECE e resumo.')}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
         f"{workspace_context_block(state)}"
-        f"Product Brief:\n{product}"
+        f"Contexto da entrega:\n{delivery_context}"
     )
+    if state.get("active_flow") == "bugfix":
+        if {"privacy", "appsec"}.intersection(state.get("on_demand_agents", [])):
+            handoff_to = "Sensitive Gate Review"
+            next_step = "Gates sensiveis devem revisar o ajuste antes da implementacao."
+        else:
+            handoff_to = "Implementation Operator"
+            next_step = "Operator deve incorporar os estados e friccoes sinalizados no ajuste."
+    else:
+        handoff_to = "QA Planning"
+        next_step = "QA Planning deve cobrir estados e friccoes sinalizadas."
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
         from_agent="UX/UI Lead",
-        to_agent="QA Planning",
+        to_agent=handoff_to,
         artifact="UX/UI Gate",
         summary=response.content[:500],
         ece="C1/C2",
         blockers="Bloqueios de experiencia devem ser incorporados aos criterios de aceite.",
-        next_step="QA Planning deve cobrir estados e friccoes sinalizadas.",
+        next_step=next_step,
         escalate_to_cos="Somente se houver output C3."
     )
     return with_orchestrator_check(state, "ux_ui", response, {
@@ -1072,10 +1086,18 @@ def route_after_product(state: SquadState) -> str:
 
 
 def route_after_ux_ui(state: SquadState) -> str:
+    if state.get("active_flow") == "bugfix":
+        if "privacy" in state.get("on_demand_agents", []):
+            return next_after_check(state, "ux_ui", "privacy")
+        if "appsec" in state.get("on_demand_agents", []):
+            return next_after_check(state, "ux_ui", "appsec")
+        return next_after_check(state, "ux_ui", "operator")
     return next_after_check(state, "ux_ui", "qa_planning")
 
 
 def route_after_engineering(state: SquadState) -> str:
+    if state.get("active_flow") == "bugfix" and "ux_ui" in state.get("on_demand_agents", []):
+        return next_after_check(state, "engineering", "ux_ui")
     if "privacy" in state.get("on_demand_agents", []):
         return next_after_check(state, "engineering", "privacy")
     if "appsec" in state.get("on_demand_agents", []):
@@ -1149,7 +1171,7 @@ builder.add_conditional_edges(
 builder.add_conditional_edges(
     "ux_ui",
     route_after_ux_ui,
-    ["qa_planning", "cos"]
+    ["qa_planning", "privacy", "appsec", "operator", "cos"]
 )
 builder.add_conditional_edges(
     "qa_planning",
@@ -1159,7 +1181,7 @@ builder.add_conditional_edges(
 builder.add_conditional_edges(
     "engineering",
     route_after_engineering,
-    ["privacy", "appsec", "operator", "cos"]
+    ["ux_ui", "privacy", "appsec", "operator", "cos"]
 )
 builder.add_conditional_edges(
     "privacy",

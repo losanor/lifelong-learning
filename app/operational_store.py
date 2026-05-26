@@ -356,6 +356,64 @@ def record_run(
             )
 
 
+def record_run_started(
+    *,
+    run_id: str,
+    user_goal: str,
+    project_id: str,
+    initiative_id: str,
+    memory_namespace: str,
+    active_flow: str,
+    execution_policy: dict[str, Any],
+    status: str = "queued",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> None:
+    """Registra uma run antes do trabalho assíncrono para exibição na console."""
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO runs (
+                run_id, created_at, project_id, initiative_id, memory_namespace,
+                user_goal, active_flow, execution_tier, execution_policy_json,
+                status, execution_ready, agent_count, c3_count,
+                operational_packet_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, '{}')
+            """,
+            (
+                run_id,
+                datetime.now(timezone.utc).isoformat(),
+                project_id,
+                initiative_id,
+                memory_namespace,
+                user_goal,
+                active_flow,
+                execution_policy.get("execution_tier", ""),
+                json.dumps(execution_policy, ensure_ascii=False),
+                status,
+            ),
+        )
+
+
+def update_run_status(
+    run_id: str,
+    *,
+    status: str,
+    operational_packet: dict[str, Any] | None = None,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> None:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE runs
+            SET status=?, operational_packet_json=?
+            WHERE run_id=?
+            """,
+            (status, json.dumps(operational_packet or {}, ensure_ascii=False), run_id),
+        )
+
+
 def record_eval_result(
     *,
     evaluation_id: str,

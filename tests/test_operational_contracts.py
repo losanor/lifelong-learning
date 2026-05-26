@@ -38,6 +38,9 @@ from app.operational_store import (
     pending_work_snapshot,
     record_baseline_result,
     record_run,
+    record_run_started,
+    recent_runs_snapshot,
+    update_run_status,
     update_human_review,
     workflow_checkpoint_snapshot,
 )
@@ -45,6 +48,7 @@ from app.orchestrator import inspect_agent_output, update_orchestrator_checks
 from app.retry_policy import initialize_retry_state, resolve_retry_permission
 from app.structured_output import CoSOutputEnvelope, mock_agent_output, safe_parse_agent_output
 from app.intake import decide_intake
+from app.run_service import enqueue_manual_run, preview_manual_run
 from app.workspace_context import capture_workspace_context, format_workspace_context
 from cmo_especializado import CMOFactory
 from contracts import ECE, Fase, SharedMemory
@@ -729,6 +733,136 @@ class OperationalContractsTest(unittest.TestCase):
             if db_path.exists():
                 db_path.unlink()
 
+    def test_manual_run_preview_has_cost_policy_and_requires_confirmation(self):
+        preview = preview_manual_run(
+            {
+                "user_goal": "Documentar a arquitetura no README.",
+                "project_id": "Portal",
+                "initiative_id": "Docs V1",
+                "workspace_root": ".",
+            }
+        )
+        self.assertEqual(preview["active_flow"], "docs")
+        self.assertEqual(preview["project_id"], "portal")
+        self.assertEqual(preview["execution_policy"]["execution_tier"], "quick")
+        self.assertGreater(preview["execution_policy"]["max_cost_usd"], 0)
+
+        with self.assertRaises(ValueError):
+            enqueue_manual_run({"user_goal": "Documentar README."})
+
+    def test_operations_api_previews_and_queues_supervised_manual_run(self):
+        from http.server import ThreadingHTTPServer
+
+        db_path = Path("data") / "test_manual_run_api.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        launched = []
+
+        def fake_starter(payload, *, db_path):
+            launched.append((payload, db_path))
+            return {"run_id": "run_queued", "status": "queued"}
+
+        server = None
+        try:
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", 0),
+                make_handler(db_path, run_starter=fake_starter),
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            payload = {
+                "user_goal": "Corrigir bug na tela de login.",
+                "project_id": "Portal",
+                "initiative_id": "Login",
+                "workspace_root": ".",
+            }
+            preview_request = urllib.request.Request(
+                f"{base_url}/api/intake/preview",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(preview_request) as response:
+                preview = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(preview["active_flow"], "bugfix")
+            self.assertEqual(preview["execution_policy"]["execution_tier"], "standard")
+
+            launch_request = urllib.request.Request(
+                f"{base_url}/api/runs",
+                data=json.dumps({**payload, "cost_confirmed": True}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(launch_request) as response:
+                queued = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(response.status, 202)
+            self.assertEqual(queued["status"], "queued")
+            self.assertEqual(launched[0][0]["user_goal"], payload["user_goal"])
+        finally:
+            if server:
+                server.shutdown()
+                server.server_close()
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_operations_api_rejects_cross_origin_manual_mutations(self):
+        from http.server import ThreadingHTTPServer
+
+        db_path = Path("data") / "test_origin_api.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        server = None
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(db_path))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}/api/intake/preview",
+                data=json.dumps({"user_goal": "Documentar README."}).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Origin": "https://external.invalid"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(request)
+            self.assertEqual(raised.exception.code, 403)
+            raised.exception.close()
+        finally:
+            if server:
+                server.shutdown()
+                server.server_close()
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_queued_manual_run_is_visible_and_can_fail_safely(self):
+        db_path = Path("data") / "test_queued_run.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        try:
+            record_run_started(
+                run_id="run_pending",
+                user_goal="Construir uma feature.",
+                project_id="portal",
+                initiative_id="signup",
+                memory_namespace="portal:signup",
+                active_flow="delivery_core",
+                execution_policy={"execution_tier": "full"},
+                db_path=db_path,
+            )
+            run = recent_runs_snapshot(db_path=db_path)["runs"][0]
+            self.assertEqual(run["status"], "queued")
+
+            update_run_status(
+                "run_pending",
+                status="failed",
+                operational_packet={"error": "Falha controlada."},
+                db_path=db_path,
+            )
+            self.assertEqual(recent_runs_snapshot(db_path=db_path)["runs"][0]["status"], "failed")
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
     def test_n8n_webhook_requires_token_and_queues_idempotent_demand(self):
         from http.server import ThreadingHTTPServer
 
@@ -1020,6 +1154,23 @@ class OperationalContractsTest(unittest.TestCase):
         self.assertIn("appsec", decision.on_demand_agents)
         self.assertEqual(decision.execution_policy["execution_tier"], "controlled")
         self.assertIn("write_files", decision.execution_policy["approval_required_actions"])
+
+    def test_ui_bugfix_routes_through_planned_ux_gate_before_operator(self):
+        decision = decide_intake("Corrigir bug na tela de login.")
+        state = {**decision.as_state(), "orchestrator_checks": {}}
+
+        self.assertEqual(decision.active_flow, "bugfix")
+        self.assertIn("ux_ui", decision.on_demand_agents)
+        self.assertEqual(graph_module.route_after_engineering(state), "ux_ui")
+        self.assertEqual(graph_module.route_after_ux_ui(state), "operator")
+
+    def test_sensitive_ui_bugfix_keeps_security_gates_after_ux(self):
+        decision = decide_intake("Corrigir falha na tela com dados pessoais e autenticacao.")
+        state = {**decision.as_state(), "orchestrator_checks": {}}
+
+        self.assertEqual(graph_module.route_after_engineering(state), "ux_ui")
+        self.assertEqual(graph_module.route_after_ux_ui(state), "privacy")
+        self.assertEqual(graph_module.route_after_privacy(state), "appsec")
 
     def test_langsmith_config_tags_specialist_gates(self):
         policy = decide_intake(

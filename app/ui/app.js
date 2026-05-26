@@ -1,4 +1,4 @@
-const state = { dashboard: null, requests: [], selectedId: null, filter: "pending" };
+const state = { dashboard: null, requests: [], selectedId: null, filter: "pending", intakePreview: null };
 const byId = (id) => document.getElementById(id);
 
 function escapeText(value) {
@@ -69,7 +69,7 @@ function renderList() {
 function renderRuns() {
   const runs = state.dashboard.recent_runs.runs || [];
   byId("run-list").innerHTML = runs.slice(0, 10).map((run) =>
-    `<div class="run"><strong>${escapeText(run.user_goal || run.run_id)}</strong><span>${escapeText(run.active_flow)} | ${escapeText(run.execution_tier || "legacy")}</span><span>${escapeText(run.status)}</span></div>`
+    `<div class="run"><strong>${escapeText(run.user_goal || run.run_id)}</strong><span>${escapeText(run.project_id)} / ${escapeText(run.initiative_id)}</span><span>${escapeText(run.active_flow)} | ${escapeText(run.execution_tier || "legacy")}</span><span class="run-status ${statusClass(run.status)}">${escapeText(run.status)}</span></div>`
   ).join("") || `<p class="muted">Sem runs registradas.</p>`;
 }
 
@@ -186,6 +186,68 @@ async function loadDashboard() {
   }
 }
 
+function runPayload() {
+  return {
+    user_goal: byId("run-goal").value.trim(),
+    project_id: byId("run-project").value.trim(),
+    initiative_id: byId("run-initiative").value.trim(),
+    workspace_root: byId("run-workspace").value.trim() || ".",
+  };
+}
+
+function clearPreview() {
+  state.intakePreview = null;
+  byId("intake-preview").hidden = true;
+  byId("confirm-cost").checked = false;
+  byId("start-run").disabled = true;
+}
+
+function renderPreview(preview) {
+  state.intakePreview = preview;
+  const policy = preview.execution_policy;
+  byId("preview-flow").textContent = preview.active_flow;
+  byId("preview-tier").textContent = policy.execution_tier;
+  byId("preview-budget").textContent = `US$ ${Number(policy.max_cost_usd).toFixed(2)}`;
+  byId("preview-agents").textContent = String(policy.planned_agent_count);
+  byId("preview-note").textContent = `${preview.rationale} O teto e uma estimativa operacional, nao um bloqueio de cobranca do provedor. Efeitos no workspace permanecem sujeitos a aprovacao.`;
+  byId("confirm-cost").checked = false;
+  byId("start-run").disabled = true;
+  byId("intake-preview").hidden = false;
+}
+
+async function previewRun(event) {
+  event.preventDefault();
+  try {
+    const preview = await api("/api/intake/preview", {
+      method: "POST",
+      body: JSON.stringify(runPayload()),
+    });
+    renderPreview(preview);
+  } catch (error) {
+    clearPreview();
+    toast(error.message, true);
+  }
+}
+
+async function startRun() {
+  if (!state.intakePreview || !byId("confirm-cost").checked) return;
+  byId("start-run").disabled = true;
+  try {
+    const run = await api("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({ ...runPayload(), cost_confirmed: true }),
+    });
+    toast(`Run ${run.run_id} enfileirada.`);
+    clearPreview();
+    byId("run-form").reset();
+    byId("run-workspace").value = ".";
+    await loadDashboard();
+  } catch (error) {
+    byId("start-run").disabled = false;
+    toast(error.message, true);
+  }
+}
+
 document.querySelectorAll(".segment").forEach((button) => {
   button.addEventListener("click", () => {
     document.querySelectorAll(".segment").forEach((item) => item.classList.remove("active"));
@@ -195,4 +257,16 @@ document.querySelectorAll(".segment").forEach((button) => {
   });
 });
 byId("refresh").addEventListener("click", loadDashboard);
+byId("run-form").addEventListener("submit", previewRun);
+byId("start-run").addEventListener("click", startRun);
+byId("confirm-cost").addEventListener("change", (event) => {
+  byId("start-run").disabled = !event.target.checked;
+});
+["run-goal", "run-project", "run-initiative", "run-workspace"].forEach((id) => {
+  byId(id).addEventListener("input", clearPreview);
+});
 loadDashboard();
+window.setInterval(() => {
+  const runs = state.dashboard?.recent_runs?.runs || [];
+  if (runs.some((run) => ["queued", "running"].includes(run.status))) loadDashboard();
+}, 5000);

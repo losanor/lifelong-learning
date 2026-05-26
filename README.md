@@ -122,7 +122,14 @@ Para operar pela interface:
 ```
 
 Abra `http://127.0.0.1:8765`. A API e a interface vinculam por padrao somente
-ao host local e reutilizam os mesmos checkpoints e gates do CLI.
+ao host local e reutilizam os mesmos checkpoints e gates do CLI. Na area
+`Nova demanda`, informe projeto, iniciativa, workspace e objetivo. A console
+calcula fluxo, agentes e limite estimado sem chamar o modelo; uma run real so
+e enfileirada apos a confirmacao explicita do tier/custo. Ela aparece em
+`Runs recentes` enquanto processa e, quando produzir efeitos propostos, segue
+para os dois approvals existentes antes de qualquer escrita. O limite exibido
+e orcamento operacional estimado, nao trava de cobranca do provedor do modelo.
+A API rejeita mutacoes originadas por paginas web externas ao host local.
 
 ## Automacao com n8n
 

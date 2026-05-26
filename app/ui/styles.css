@@ -142,6 +142,63 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .metric span { color: var(--muted); font-size: 12px; display: block; margin-bottom: 5px; }
 .metric strong { font-size: 21px; font-weight: 620; font-variant-numeric: tabular-nums; }
 
+.intake-panel {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 7px;
+  padding: 16px 18px;
+  margin-bottom: 18px;
+}
+.objective-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.objective-field textarea {
+  min-height: 70px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+}
+.intake-fields {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.8fr) minmax(112px, 0.8fr) minmax(160px, 1.25fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin-top: 11px;
+}
+.intake-fields .field input { width: 100%; }
+.preview-action { height: 34px; white-space: nowrap; }
+.intake-preview {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 13px;
+}
+.preview-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(92px, 1fr));
+  gap: 10px;
+}
+.preview-summary span { display: block; font-size: 12px; color: var(--muted); }
+.preview-summary strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 15px;
+  font-weight: 620;
+  overflow-wrap: anywhere;
+}
+.preview-note {
+  margin: 11px 0;
+  color: #344251;
+  font-size: 13px;
+}
+.launch-row { display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+.cost-check { height: auto; }
+
 .empty-detail {
   border: 1px dashed var(--border);
   padding: 46px 24px;
@@ -224,6 +281,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 }
 .run strong { display: block; font-size: 13px; overflow-wrap: anywhere; }
 .run span { color: var(--muted); font-size: 12px; display: block; }
+.run-status.done { color: var(--green); }
+.run-status.blocked { color: var(--red); }
 .toast {
   position: fixed;
   right: 18px;
@@ -257,4 +316,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   .block + .block { border-left: 0; border-top: 1px solid var(--border); }
   .metrics { grid-template-columns: repeat(2, 1fr); }
   .field, .field input { width: 100%; }
+  .intake-fields, .preview-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .preview-action { grid-column: 1 / -1; width: 100%; }
+  .launch-row { flex-direction: column; align-items: stretch; }
+  .launch-row .action { width: 100%; }
 }

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Squad Operations</title>
-  <link rel="stylesheet" href="/styles.css?v=1">
+  <link rel="stylesheet" href="/styles.css?v=2">
 </head>
 <body>
   <header class="topbar">
@@ -41,6 +41,61 @@
     </aside>
 
     <section class="main-panel">
+      <section class="intake-panel" aria-labelledby="new-run-title">
+        <div class="section-head">
+          <h2 id="new-run-title">Nova demanda</h2>
+          <span class="muted">Execucao supervisionada</span>
+        </div>
+        <form id="run-form">
+          <label class="objective-field">
+            <span>Objetivo</span>
+            <textarea id="run-goal" required maxlength="4000" placeholder="Ex.: revisar o fluxo de cadastro e propor uma correcao para validacao."></textarea>
+          </label>
+          <div class="intake-fields">
+            <label class="field">
+              <span>Projeto</span>
+              <input id="run-project" type="text" placeholder="cliente-produto">
+            </label>
+            <label class="field">
+              <span>Iniciativa</span>
+              <input id="run-initiative" type="text" placeholder="cadastro-v1">
+            </label>
+            <label class="field workspace-field">
+              <span>Workspace</span>
+              <input id="run-workspace" type="text" value=".">
+            </label>
+            <button class="action preview-action" type="submit">Calcular rota</button>
+          </div>
+        </form>
+        <div class="intake-preview" id="intake-preview" hidden>
+          <div class="preview-summary">
+            <div>
+              <span>Fluxo</span>
+              <strong id="preview-flow"></strong>
+            </div>
+            <div>
+              <span>Tier</span>
+              <strong id="preview-tier"></strong>
+            </div>
+            <div>
+              <span>Limite estimado</span>
+              <strong id="preview-budget"></strong>
+            </div>
+            <div>
+              <span>Agentes</span>
+              <strong id="preview-agents"></strong>
+            </div>
+          </div>
+          <p class="preview-note" id="preview-note"></p>
+          <div class="launch-row">
+            <label class="checkbox cost-check">
+              <input id="confirm-cost" type="checkbox">
+              Confirmo o tier e autorizo esta run com modelo real.
+            </label>
+            <button class="action primary" id="start-run" type="button" disabled>Iniciar run</button>
+          </div>
+        </div>
+      </section>
       <div class="metrics" id="metrics" aria-label="Metricas"></div>
       <div class="empty-detail" id="empty-detail">
         <h2>Nenhuma solicitacao selecionada</h2>
@@ -106,6 +161,6 @@
     </aside>
   </main>
   <div class="toast" id="toast" role="status" hidden></div>
-  <script defer src="/app.js?v=1"></script>
+  <script defer src="/app.js?v=2"></script>
 </body>
 </html>
