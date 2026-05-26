@@ -141,6 +141,11 @@ carregado pelo LangSmith Deployment / Agent Server. O procedimento e as
 fronteiras entre a console SQLite local e a persistencia distribuida estao em
 [docs/deployment.md](docs/deployment.md).
 
+O primeiro deployment recomendado e Cloud gerenciado em tier de desenvolvimento
+para executar o smoke test, com `BG_JOB_ISOLATED_LOOPS=true` e concorrencia
+inicial conservadora. A promocao para producao vem apos verificar traces,
+custo e latencia do fluxo real.
+
 Para iniciar uma baseline real rastreada, primeiro configure chaves somente em
 `.env` (nunca em `.env.example`) e rode um piloto de baixo custo:
 

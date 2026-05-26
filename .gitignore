@@ -14,3 +14,4 @@ data/*.sqlite3
 data/namespaces/
 data/eval_report*.json
 data/baseline_report*.json
+.langgraph_api/
