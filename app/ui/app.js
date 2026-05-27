@@ -8,6 +8,9 @@ const state = {
   decisions: null,
   costs: null,
   ideas: null,
+  topology: null,
+  selectedTopologyAgent: "cos",
+  orchestrationTab: "map",
   activeView: "inbox",
 };
 const byId = (id) => document.getElementById(id);
@@ -105,6 +108,83 @@ function activityOptionLabel(run) {
   const parts = [compactGoal(run.user_goal), flowLabel(run.active_flow), formatActivityDate(run.created_at)];
   if (run.project_id) parts.splice(1, 0, `Projeto: ${run.project_id}`);
   return parts.filter(Boolean).join(" | ");
+}
+
+const topologyModeLabels = {
+  fixed: "Fixo",
+  on_demand: "Sob demanda",
+  system: "Sistema",
+  human: "Humano",
+};
+
+function topologyAgent(agentId) {
+  return state.topology?.agents.find((agent) => agent.id === agentId);
+}
+
+function topologyNode(agent) {
+  return `<button class="topology-node ${escapeText(agent.mode)} ${agent.id === state.selectedTopologyAgent ? "active" : ""}" data-agent-id="${escapeText(agent.id)}" type="button">
+    <strong>${escapeText(agent.label)}</strong>
+    <span>${escapeText(topologyModeLabels[agent.mode] || agent.mode)}</span>
+  </button>`;
+}
+
+function selectTopologyAgent(agentId) {
+  state.selectedTopologyAgent = agentId;
+  renderTopology();
+}
+
+function renderTopology() {
+  if (!state.topology) return;
+  const agentById = Object.fromEntries(state.topology.agents.map((agent) => [agent.id, agent]));
+  byId("topology-core").innerHTML = state.topology.core_path.map((agentId, index) => {
+    const arrow = index < state.topology.core_path.length - 1 ? `<span class="path-arrow" aria-hidden="true">&rarr;</span>` : "";
+    return `${topologyNode(agentById[agentId])}${arrow}`;
+  }).join("");
+  byId("topology-specialists").innerHTML = state.topology.agents
+    .filter((agent) => agent.stage === "specialist")
+    .map(topologyNode).join("");
+  byId("topology-governance").innerHTML = topologyNode(agentById.human);
+  byId("topology-routes").innerHTML = state.topology.connections
+    .filter((connection) => connection.kind !== "core")
+    .map((connection) => `<div class="route-chip ${escapeText(connection.kind)}">
+      <strong>${escapeText(agentById[connection.from].label)}</strong>
+      <span aria-hidden="true">&rarr;</span>
+      <strong>${escapeText(agentById[connection.to].label)}</strong>
+      <small>${escapeText(connection.label)}</small>
+    </div>`).join("");
+  byId("topology-integrations").innerHTML = state.topology.integrations.map((integration) =>
+    `<article class="integration-item"><strong>${escapeText(integration.label)}</strong><span>${escapeText(integration.purpose)}</span></article>`
+  ).join("");
+
+  const selected = agentById[state.selectedTopologyAgent] || agentById.cos;
+  const interactions = state.topology.connections.filter((item) => item.from === selected.id || item.to === selected.id);
+  byId("topology-detail").innerHTML = `
+    <div class="agent-detail-head">
+      <span class="agent-mode ${escapeText(selected.mode)}">${escapeText(topologyModeLabels[selected.mode] || selected.mode)}</span>
+      <h3>${escapeText(selected.label)}</h3>
+    </div>
+    <p class="agent-purpose">${escapeText(selected.responsibility)}</p>
+    <h4>Quando participa</h4>
+    <p>${escapeText(selected.trigger)}</p>
+    <h4>Interacoes configuradas</h4>
+    <div class="interaction-list">${interactions.map((interaction) => {
+      const direction = interaction.from === selected.id ? "Envia para" : "Recebe de";
+      const counterpart = interaction.from === selected.id ? agentById[interaction.to] : agentById[interaction.from];
+      return `<div class="interaction ${escapeText(interaction.kind)}"><span>${escapeText(direction)}</span><strong>${escapeText(counterpart.label)}</strong><small>${escapeText(interaction.label)}</small></div>`;
+    }).join("") || `<p class="muted">Sem interacoes registradas.</p>`}</div>`;
+  document.querySelectorAll(".topology-node").forEach((button) =>
+    button.addEventListener("click", () => selectTopologyAgent(button.dataset.agentId))
+  );
+}
+
+function switchOrchestrationTab(tab) {
+  state.orchestrationTab = tab;
+  document.querySelectorAll("[data-orchestration-tab]").forEach((button) =>
+    button.classList.toggle("active", button.dataset.orchestrationTab === tab)
+  );
+  byId("orchestration-map").hidden = tab !== "map";
+  byId("orchestration-executions").hidden = tab !== "executions";
+  if (tab === "executions") renderFlow(byId("flow-run-select").value).catch((error) => toast(error.message, true));
 }
 
 function renderMetrics(metrics) {
@@ -340,7 +420,7 @@ async function renderFlow(runId = "") {
     ? `<span>${escapeText(traceCost)}</span>${traceUrl ? `<a class="trace-link" target="_blank" rel="noopener noreferrer" href="${escapeText(traceUrl)}">Abrir trace no LangSmith</a>` : `<span class="muted">Sincronize em Custos para abrir o trace.</span>`}`
     : `<span class="muted">Esta run nao possui trace registrado.</span>`;
   byId("agent-flow").innerHTML = flow.agents.map((agent) =>
-    `<article class="agent-node"><strong>${escapeText(agent.agent_name.replaceAll("_", " "))}</strong><span class="ece ${agent.ece === "C3" ? "c3" : ""}">${escapeText(agent.ece)}</span><span>${escapeText(agent.artifact_type || "artefato")}</span><span>${agent.schema_valid ? "Schema valido" : "Revisar schema"}</span></article>`
+    `<article class="agent-node"><strong>${escapeText(topologyAgent(agent.agent_name)?.label || friendlyIdentifier(agent.agent_name))}</strong><span class="ece ${agent.ece === "C3" ? "c3" : ""}">${escapeText(agent.ece)}</span><span>${escapeText(agent.artifact_type || "artefato")}</span><span>${agent.schema_valid ? "Schema valido" : "Revisar schema"}</span></article>`
   ).join("") || `<p class="muted">Sem interacoes registradas.</p>`;
 }
 
@@ -421,7 +501,7 @@ async function syncLangSmith() {
       : "Nenhuma run com trace registrado para sincronizar.";
     state.costs = result.costs;
     renderCosts(result.costs);
-    if (state.activeView === "flow") await renderFlow(byId("flow-run-select").value);
+    if (state.activeView === "flow" && state.orchestrationTab === "executions") await renderFlow(byId("flow-run-select").value);
   } catch (error) {
     byId("sync-result").textContent = error.message;
     toast(error.message, true);
@@ -480,14 +560,17 @@ function switchView(view) {
   state.activeView = view;
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   document.querySelectorAll(".app-view").forEach((section) => section.classList.toggle("active", section.id === `view-${view}`));
-  if (view === "flow") renderFlow().catch((error) => toast(error.message, true));
+  if (view === "flow") {
+    renderTopology();
+    if (state.orchestrationTab === "executions") renderFlow().catch((error) => toast(error.message, true));
+  }
 }
 
 async function loadAll() {
   try {
-    const [dashboard, requestSnapshot, board, decisions, costs, ideas] = await Promise.all([
+    const [dashboard, requestSnapshot, board, decisions, costs, ideas, topology] = await Promise.all([
       api("/api/dashboard"), api("/api/requests"), api("/api/board"),
-      api("/api/decisions"), api("/api/costs"), api("/api/ideas"),
+      api("/api/decisions"), api("/api/costs"), api("/api/ideas"), api("/api/topology"),
     ]);
     state.dashboard = dashboard;
     state.requests = requestSnapshot.requests;
@@ -495,6 +578,7 @@ async function loadAll() {
     state.decisions = decisions;
     state.costs = costs;
     state.ideas = ideas;
+    state.topology = topology;
     byId("system-status").textContent = "Runtime local conectado";
     renderMetrics(dashboard.metrics);
     renderRuns();
@@ -504,7 +588,8 @@ async function loadAll() {
     renderDecisions(decisions);
     renderCosts(costs);
     renderIdeas(ideas);
-    if (state.activeView === "flow") await renderFlow(byId("flow-run-select").value);
+    renderTopology();
+    if (state.activeView === "flow" && state.orchestrationTab === "executions") await renderFlow(byId("flow-run-select").value);
   } catch (error) {
     byId("system-status").textContent = "Runtime indisponivel";
     toast(error.message, true);
@@ -512,14 +597,17 @@ async function loadAll() {
 }
 
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
-document.querySelectorAll(".segment").forEach((button) => button.addEventListener("click", () => {
-  document.querySelectorAll(".segment").forEach((item) => item.classList.remove("active"));
+document.querySelectorAll("[aria-label='Filtro de approvals'] .segment").forEach((button) => button.addEventListener("click", () => {
+  document.querySelectorAll("[aria-label='Filtro de approvals'] .segment").forEach((item) => item.classList.remove("active"));
   button.classList.add("active");
   state.filter = button.dataset.filter;
   renderList();
 }));
 byId("refresh").addEventListener("click", loadAll);
 byId("sync-langsmith").addEventListener("click", syncLangSmith);
+document.querySelectorAll("[data-orchestration-tab]").forEach((button) =>
+  button.addEventListener("click", () => switchOrchestrationTab(button.dataset.orchestrationTab))
+);
 byId("run-form").addEventListener("submit", previewRun);
 byId("start-run").addEventListener("click", startRun);
 byId("confirm-cost").addEventListener("change", (event) => { byId("start-run").disabled = !event.target.checked; });

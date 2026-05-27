@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Squad Operations</title>
-  <link rel="stylesheet" href="/styles.css?v=5">
+  <link rel="stylesheet" href="/styles.css?v=6">
 </head>
 <body>
   <header class="topbar">
@@ -22,7 +22,7 @@
     <nav class="primary-nav" aria-label="Areas de operacao">
       <button class="nav-item active" type="button" data-view="inbox"><span class="nav-icon">I</span>Inbox</button>
       <button class="nav-item" type="button" data-view="board"><span class="nav-icon">B</span>Board</button>
-      <button class="nav-item" type="button" data-view="flow"><span class="nav-icon">F</span>Fluxo</button>
+      <button class="nav-item" type="button" data-view="flow"><span class="nav-icon">O</span>Orquestracao</button>
       <button class="nav-item" type="button" data-view="decisions"><span class="nav-icon">D</span>Decisoes <span class="nav-count" id="decision-badge">0</span></button>
       <button class="nav-item" type="button" data-view="costs"><span class="nav-icon">$</span>Custos</button>
       <button class="nav-item" type="button" data-view="ideas"><span class="nav-icon">+</span>Ideias</button>
@@ -133,15 +133,58 @@
       </section>
 
       <section class="app-view" id="view-flow" aria-labelledby="flow-title">
-        <header class="page-header flow-header">
-          <div><h2 id="flow-title">Fluxo da run</h2><p>Agentes executados e passagens de contexto</p></div>
-          <label class="select-field"><span>Atividade executada</span><select id="flow-run-select"></select></label>
+        <header class="page-header">
+          <div><h2 id="flow-title">Orquestracao</h2><p>Estrutura da squad e historico das atividades</p></div>
         </header>
-        <section class="panel flow-canvas">
-          <h3 class="flow-goal" id="flow-goal"></h3>
-          <div class="flow-meta" id="flow-meta"></div>
-          <div class="trace-summary" id="flow-trace"></div>
-          <div class="agent-flow" id="agent-flow"></div>
+        <nav class="orchestration-tabs segments" aria-label="Visao de orquestracao">
+          <button class="segment active" data-orchestration-tab="map" type="button">Mapa da Squad</button>
+          <button class="segment" data-orchestration-tab="executions" type="button">Execucoes</button>
+        </nav>
+        <section class="orchestration-view" id="orchestration-map">
+          <div class="map-legend" aria-label="Legenda do mapa">
+            <span class="legend-item fixed">Fixo</span>
+            <span class="legend-item on-demand">Sob demanda</span>
+            <span class="legend-item human">Decisao humana</span>
+            <span class="legend-line">Fluxo principal</span>
+            <span class="legend-line conditional">Quando necessario</span>
+          </div>
+          <div class="topology-layout">
+            <section class="panel topology-board" aria-label="Mapa de interacoes previsto">
+              <div class="topology-lane">
+                <div class="lane-title"><strong>Caminho principal</strong><span>Percurso padrao de entrega</span></div>
+                <div class="core-path" id="topology-core"></div>
+              </div>
+              <div class="topology-lane specialist-lane">
+                <div class="lane-title"><strong>Especialistas</strong><span>Acionados pela necessidade da demanda</span></div>
+                <div class="specialist-path" id="topology-specialists"></div>
+              </div>
+              <div class="topology-lane governance-lane">
+                <div class="lane-title"><strong>Governanca</strong><span>Controle e decisao</span></div>
+                <div class="governance-path" id="topology-governance"></div>
+              </div>
+              <div class="topology-lane">
+                <div class="lane-title"><strong>Interacoes condicionais</strong><span>Caminhos ativados conforme contexto, risco ou decisao</span></div>
+                <div class="conditional-routes" id="topology-routes"></div>
+              </div>
+            </section>
+            <aside class="panel topology-detail" id="topology-detail" aria-label="Detalhe do agente selecionado"></aside>
+          </div>
+          <section class="integration-band" aria-label="Integracoes externas">
+            <div class="lane-title"><strong>Integracoes</strong><span>Ferramentas de suporte, nao agentes</span></div>
+            <div class="integration-list" id="topology-integrations"></div>
+          </section>
+        </section>
+        <section class="orchestration-view" id="orchestration-executions" hidden>
+          <header class="flow-header execution-header">
+            <div><h3>Historico de execucao</h3><p>O caminho realmente percorrido em uma atividade</p></div>
+            <label class="select-field"><span>Atividade executada</span><select id="flow-run-select"></select></label>
+          </header>
+          <section class="panel flow-canvas">
+            <h3 class="flow-goal" id="flow-goal"></h3>
+            <div class="flow-meta" id="flow-meta"></div>
+            <div class="trace-summary" id="flow-trace"></div>
+            <div class="agent-flow" id="agent-flow"></div>
+          </section>
         </section>
       </section>
 
@@ -191,6 +234,6 @@
     </main>
   </div>
   <div class="toast" id="toast" role="status" hidden></div>
-  <script defer src="/app.js?v=5"></script>
+  <script defer src="/app.js?v=6"></script>
 </body>
 </html>

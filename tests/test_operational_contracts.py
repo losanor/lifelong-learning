@@ -998,9 +998,22 @@ class OperationalContractsTest(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             base_url = f"http://127.0.0.1:{server.server_port}"
-            for route in ("board", "costs", "decisions", "flow?run_id=run_decision"):
+            for route in ("board", "costs", "decisions", "flow?run_id=run_decision", "topology"):
                 with urllib.request.urlopen(f"{base_url}/api/{route}") as response:
                     self.assertEqual(response.status, 200)
+            with urllib.request.urlopen(f"{base_url}/api/topology") as response:
+                topology = json.loads(response.read().decode("utf-8"))
+            self.assertIn("cos", topology["core_path"])
+            self.assertEqual(
+                next(agent["mode"] for agent in topology["agents"] if agent["id"] == "discovery"),
+                "on_demand",
+            )
+            self.assertTrue(
+                any(
+                    interaction["from"] == "cos" and interaction["to"] == "human"
+                    for interaction in topology["connections"]
+                )
+            )
             with urllib.request.urlopen(f"{base_url}/api/dashboard") as response:
                 dashboard = json.loads(response.read().decode("utf-8"))
             self.assertEqual(dashboard["metrics"]["run_count"], 1)

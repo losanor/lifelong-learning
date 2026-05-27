@@ -42,6 +42,7 @@ from app.operational_store import (
 )
 from app.scoped_storage import read_scoped_or_seed
 from app.run_service import enqueue_manual_run, preview_manual_run
+from app.squad_topology import squad_topology_snapshot
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -124,6 +125,9 @@ class OperationsHandler(SimpleHTTPRequestHandler):
         if path == "/api/flow":
             run_id = parse_qs(urlparse(self.path).query).get("run_id", [""])[0][:120]
             self._json(run_flow_snapshot(run_id=run_id or None, db_path=self.db_path))
+            return
+        if path == "/api/topology":
+            self._json(squad_topology_snapshot())
             return
         if path == "/api/ideas":
             self._json(parking_lot_snapshot(self.db_path))

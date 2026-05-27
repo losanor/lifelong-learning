@@ -28,7 +28,7 @@ Telas operacionais locais implementadas:
 
 - Caixa de entrada de demandas com `project_id` e `initiative_id`.
 - Board visual com trabalho a iniciar, em andamento, sob decisao humana, em aprovacao, concluido ou bloqueado.
-- Fluxo de cada run com os agentes acionados e seus artefatos/ECE.
+- Orquestracao com mapa configurado da squad, distincao entre agentes fixos/sob demanda, rotas condicionais, gate humano e historico executado por atividade.
 - Decisoes humanas pendentes com resposta registrada e retomada auditavel.
 - Custos com orcamento estimado agregado por tier/projeto, subtotal de validacoes e sincronizacao manual do custo observado/link dos traces LangSmith.
 - Parking lot de ideias com promocao supervisionada para a caixa de entrada.
@@ -68,7 +68,7 @@ PostgreSQL, incluindo checkpoints internos do grafo LangGraph.
 - Console operacional local consumindo API do runtime. (implementado)
 - Aprovacoes, custo/tier, diffs, validacoes, timeline e runs recentes. (implementado)
 - Intake manual com previa deterministica de fluxo/custo e disparo supervisionado. (implementado local)
-- Board, fluxo entre agentes, fila de decisoes humanas e parking lot supervisionado. (implementado local)
+- Board, mapa de orquestracao, execucoes entre agentes, fila de decisoes humanas e parking lot supervisionado. (implementado local)
 - Separacao de runs `eval-*`/`baseline-*` das filas diarias, preservando custo de validacao. (implementado local)
 - Integrar custo observado e link direto do trace LangSmith por run. (implementado local, sincronizacao manual)
 - Consolidar custo observado de runs historicas ou executadas sem trace. (pendente)

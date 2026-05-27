@@ -134,7 +134,7 @@ A API rejeita mutacoes originadas por paginas web externas ao host local.
 A console operacional inclui:
 
 - `Board`: kanban de entradas, execucao, decisoes humanas, aprovacoes e entregas.
-- `Fluxo`: sequencia visual dos agentes acionados em cada run.
+- `Orquestracao`: mapa configurado da squad com agentes fixos/sob demanda, rotas condicionais e gate humano; a aba `Execucoes` mostra a sequencia observada em cada atividade.
 - `Decisoes`: escaladas pendentes com resposta e direcao registradas pelo humano.
 - `Custos`: orcamento maximo estimado por tier e projeto, subtotal de validacoes e sincronizacao manual do custo/tokens observados em traces LangSmith.
 - `Ideias`: parking lot que promove candidatos para a inbox, sem auto-executar agentes.
