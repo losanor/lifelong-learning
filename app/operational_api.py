@@ -19,6 +19,7 @@ from app.execution_engine import (
     prepare_execution_request,
     rollback_execution_request,
 )
+from app.observability import fetch_langsmith_trace
 from app.operational_store import (
     DEFAULT_DB_PATH,
     automation_demand_snapshot,
@@ -35,6 +36,8 @@ from app.operational_store import (
     recent_runs_snapshot,
     respond_human_decision,
     run_flow_snapshot,
+    trace_sync_candidates,
+    update_run_observability,
     workflow_checkpoint_snapshot,
 )
 from app.scoped_storage import read_scoped_or_seed
@@ -50,6 +53,7 @@ class OperationsHandler(SimpleHTTPRequestHandler):
     db_path: Path = DEFAULT_DB_PATH
     webhook_token: str = ""
     run_starter = staticmethod(enqueue_manual_run)
+    trace_loader = staticmethod(fetch_langsmith_trace)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(UI_DIR), **kwargs)
@@ -184,6 +188,9 @@ class OperationsHandler(SimpleHTTPRequestHandler):
         if len(parts) == 4 and parts[:2] == ["api", "ideas"] and parts[3] == "promote":
             self._promote_idea(parts[2])
             return
+        if path == "/api/observability/sync":
+            self._sync_observability()
+            return
         route = self._request_id_and_action()
         if route is None:
             self._json({"error": "Route not found."}, HTTPStatus.NOT_FOUND)
@@ -276,6 +283,36 @@ class OperationsHandler(SimpleHTTPRequestHandler):
         except ValueError as error:
             self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
 
+    def _sync_observability(self) -> None:
+        try:
+            payload = self._read_json()
+            run_id = str(payload.get("run_id", "")).strip()[:120] or None
+            candidates = trace_sync_candidates(run_id=run_id, db_path=self.db_path)
+            results = []
+            for candidate in candidates:
+                try:
+                    observation = self.trace_loader(candidate["trace_id"])
+                except Exception:
+                    observation = {
+                        "status": "failed",
+                        "observed_cost_usd": None,
+                        "observed_tokens": None,
+                        "trace_url": "",
+                        "error": "Falha inesperada ao sincronizar trace.",
+                    }
+                update_run_observability(candidate["run_id"], observation, db_path=self.db_path)
+                results.append({"run_id": candidate["run_id"], **observation})
+            self._json(
+                {
+                    "candidate_count": len(candidates),
+                    "synced_count": sum(1 for result in results if result["status"] == "synced"),
+                    "results": results,
+                    "costs": cost_snapshot(self.db_path),
+                }
+            )
+        except (ValueError, json.JSONDecodeError) as error:
+            self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+
     def _receive_automation_demand(self) -> None:
         if not self.webhook_token:
             self._json({"error": "Automation webhook is disabled."}, HTTPStatus.SERVICE_UNAVAILABLE)
@@ -304,7 +341,7 @@ class OperationsHandler(SimpleHTTPRequestHandler):
         return
 
 
-def make_handler(db_path: str | Path, *, webhook_token: str = "", run_starter=None):
+def make_handler(db_path: str | Path, *, webhook_token: str = "", run_starter=None, trace_loader=None):
     class BoundOperationsHandler(OperationsHandler):
         pass
 
@@ -312,6 +349,8 @@ def make_handler(db_path: str | Path, *, webhook_token: str = "", run_starter=No
     BoundOperationsHandler.webhook_token = webhook_token
     if run_starter is not None:
         BoundOperationsHandler.run_starter = staticmethod(run_starter)
+    if trace_loader is not None:
+        BoundOperationsHandler.trace_loader = staticmethod(trace_loader)
     return BoundOperationsHandler
 
 

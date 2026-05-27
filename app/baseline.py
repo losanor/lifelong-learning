@@ -218,7 +218,14 @@ def run_baseline(
             break
         duration_ms = round((perf_counter() - started_at) * 1000)
         score, findings = assess_scenario(case.scenario, result)
-        record_run(result, run_id=run_id, user_goal=case.scenario.user_goal, duration_ms=duration_ms, db_path=db_path)
+        record_run(
+            result,
+            run_id=run_id,
+            user_goal=case.scenario.user_goal,
+            duration_ms=duration_ms,
+            trace_id=str(trace_id),
+            db_path=db_path,
+        )
         record_baseline_result(
             baseline_id=baseline_id,
             scenario_id=case.scenario.scenario_id,

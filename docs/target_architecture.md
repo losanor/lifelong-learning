@@ -30,7 +30,7 @@ Telas operacionais locais implementadas:
 - Board visual com trabalho a iniciar, em andamento, sob decisao humana, em aprovacao, concluido ou bloqueado.
 - Fluxo de cada run com os agentes acionados e seus artefatos/ECE.
 - Decisoes humanas pendentes com resposta registrada e retomada auditavel.
-- Custos com orcamento estimado agregado por tier/projeto e subtotal de validacoes identificadas; custo real e traces continuam no LangSmith.
+- Custos com orcamento estimado agregado por tier/projeto, subtotal de validacoes e sincronizacao manual do custo observado/link dos traces LangSmith.
 - Parking lot de ideias com promocao supervisionada para a caixa de entrada.
 - Approval inbox para editar, aprovar ou rejeitar efeitos antes de executar.
 
@@ -70,7 +70,8 @@ PostgreSQL, incluindo checkpoints internos do grafo LangGraph.
 - Intake manual com previa deterministica de fluxo/custo e disparo supervisionado. (implementado local)
 - Board, fluxo entre agentes, fila de decisoes humanas e parking lot supervisionado. (implementado local)
 - Separacao de runs `eval-*`/`baseline-*` das filas diarias, preservando custo de validacao. (implementado local)
-- Integrar custo real e link direto do trace LangSmith por run. (pendente)
+- Integrar custo observado e link direto do trace LangSmith por run. (implementado local, sincronizacao manual)
+- Consolidar custo observado de runs historicas ou executadas sem trace. (pendente)
 - Substituir API local pelo Agent Server no deployment distribuido.
 
 ### M5 - Automacoes externas

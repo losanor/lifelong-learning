@@ -41,6 +41,11 @@ function money(value) {
   return `US$ ${Number(value || 0).toFixed(2)}`;
 }
 
+function safeTraceUrl(value) {
+  const url = String(value || "");
+  return url.startsWith("https://") ? url : "";
+}
+
 function renderMetrics(metrics) {
   const values = [
     ["Runs", metrics.run_count],
@@ -255,12 +260,18 @@ async function renderFlow(runId = "") {
   const flow = await api(`/api/flow${selectedId ? `?run_id=${encodeURIComponent(selectedId)}` : ""}`);
   if (!flow.run) {
     byId("flow-meta").innerHTML = `<p class="muted">Sem runs executadas.</p>`;
+    byId("flow-trace").innerHTML = "";
     byId("agent-flow").innerHTML = "";
     return;
   }
   byId("flow-meta").innerHTML = [
     flow.run.project_id || "sem projeto", flow.run.initiative_id || "sem iniciativa", flow.run.active_flow, flow.run.execution_tier || "legacy", flow.run.cos_decision || flow.run.status,
   ].map((value) => `<span class="pill neutral">${escapeText(value)}</span>`).join("");
+  const traceUrl = safeTraceUrl(flow.run.trace_url);
+  const traceCost = flow.run.observed_cost_usd == null ? "Custo nao sincronizado" : `Custo observado ${money(flow.run.observed_cost_usd)}`;
+  byId("flow-trace").innerHTML = flow.run.trace_id
+    ? `<span>${escapeText(traceCost)}</span>${traceUrl ? `<a class="trace-link" target="_blank" rel="noopener noreferrer" href="${escapeText(traceUrl)}">Abrir trace no LangSmith</a>` : `<span class="muted">Sincronize em Custos para abrir o trace.</span>`}`
+    : `<span class="muted">Esta run nao possui trace registrado.</span>`;
   byId("agent-flow").innerHTML = flow.agents.map((agent) =>
     `<article class="agent-node"><strong>${escapeText(agent.agent_name.replaceAll("_", " "))}</strong><span class="ece ${agent.ece === "C3" ? "c3" : ""}">${escapeText(agent.ece)}</span><span>${escapeText(agent.artifact_type || "artefato")}</span><span>${agent.schema_valid ? "Schema valido" : "Revisar schema"}</span></article>`
   ).join("") || `<p class="muted">Sem interacoes registradas.</p>`;
@@ -317,15 +328,39 @@ function renderBars(containerId, items, labelKey) {
 }
 
 function renderCosts(costs) {
+  const observedLabel = costs.real_cost_available ? money(costs.observed_cost_usd) : "Ainda nao sincronizado";
+  byId("cost-mode").textContent = costs.real_cost_available ? "Observado + estimativa" : "Estimativa";
   byId("cost-overview").innerHTML = [
     ["Runs contabilizadas", costs.total_runs],
     ["Orcamento acumulado", money(costs.estimated_budget_usd)],
     ["Tracing amostrado", costs.tracing_enabled ? `${Math.round(costs.sampling_rate * 100)}%` : "Inativo"],
     ["Validacoes identificadas", money(costs.validation_estimated_budget_usd)],
-    ["Custo real", costs.real_cost_available ? "Integrado" : "Via LangSmith"],
+    ["Custo observado", observedLabel],
+    ["Tokens observados", costs.real_cost_available ? costs.observed_tokens : "-"],
+    ["Traces sincronizados", `${costs.synced_runs} / ${costs.traced_runs}`],
   ].map(([label, value]) => `<div class="metric"><span>${label}</span><strong>${escapeText(value)}</strong></div>`).join("");
   renderBars("cost-by-tier", costs.by_tier, "tier");
   renderBars("cost-by-project", costs.by_project, "project_id");
+}
+
+async function syncLangSmith() {
+  const button = byId("sync-langsmith");
+  button.disabled = true;
+  byId("sync-result").textContent = "Consultando traces registrados...";
+  try {
+    const result = await api("/api/observability/sync", { method: "POST", body: "{}" });
+    byId("sync-result").textContent = result.candidate_count
+      ? `${result.synced_count} de ${result.candidate_count} traces sincronizados.`
+      : "Nenhuma run com trace registrado para sincronizar.";
+    state.costs = result.costs;
+    renderCosts(result.costs);
+    if (state.activeView === "flow") await renderFlow(byId("flow-run-select").value);
+  } catch (error) {
+    byId("sync-result").textContent = error.message;
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function renderIdeas(snapshot) {
@@ -417,6 +452,7 @@ document.querySelectorAll(".segment").forEach((button) => button.addEventListene
   renderList();
 }));
 byId("refresh").addEventListener("click", loadAll);
+byId("sync-langsmith").addEventListener("click", syncLangSmith);
 byId("run-form").addEventListener("submit", previewRun);
 byId("start-run").addEventListener("click", startRun);
 byId("confirm-cost").addEventListener("change", (event) => { byId("start-run").disabled = !event.target.checked; });

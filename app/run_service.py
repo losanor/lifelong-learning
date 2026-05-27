@@ -6,11 +6,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+from uuid import UUID, uuid4
 
 from app.context_policy import build_context_bundle
 from app.execution_engine import create_execution_request
 from app.intake import decide_intake
-from app.observability import build_run_config
+from app.observability import build_run_config, langsmith_ready
 from app.operational_store import DEFAULT_DB_PATH, record_run, record_run_started, update_run_status
 from app.project_scope import resolve_work_scope
 from app.retry_policy import initialize_retry_state
@@ -61,6 +62,7 @@ def enqueue_manual_run(
 
     preview = preview_manual_run(payload)
     run_id = generate_run_id()
+    trace_id = uuid4() if langsmith_ready() else None
     record_run_started(
         run_id=run_id,
         user_goal=preview["user_goal"],
@@ -69,9 +71,10 @@ def enqueue_manual_run(
         memory_namespace=preview["memory_namespace"],
         active_flow=preview["active_flow"],
         execution_policy=preview["execution_policy"],
+        trace_id=str(trace_id) if trace_id else "",
         db_path=db_path,
     )
-    RUN_EXECUTOR.submit(_execute_manual_run, run_id, preview, Path(db_path))
+    RUN_EXECUTOR.submit(_execute_manual_run, run_id, preview, Path(db_path), trace_id)
     return {
         "run_id": run_id,
         "status": "queued",
@@ -79,10 +82,16 @@ def enqueue_manual_run(
         "project_id": preview["project_id"],
         "initiative_id": preview["initiative_id"],
         "execution_policy": preview["execution_policy"],
+        "trace_id": str(trace_id) if trace_id else "",
     }
 
 
-def _execute_manual_run(run_id: str, preview: dict[str, Any], db_path: Path) -> None:
+def _execute_manual_run(
+    run_id: str,
+    preview: dict[str, Any],
+    db_path: Path,
+    trace_id: UUID | None = None,
+) -> None:
     append_run_start(run_id=run_id, user_goal=preview["user_goal"])
     update_run_status(run_id, status="running", db_path=db_path)
     started_at = perf_counter()
@@ -128,6 +137,7 @@ def _execute_manual_run(run_id: str, preview: dict[str, Any], db_path: Path) -> 
                 project_id=preview["project_id"],
                 initiative_id=preview["initiative_id"],
                 execution_policy=preview["execution_policy"],
+                trace_id=trace_id,
             ),
         )
         duration_ms = round((perf_counter() - started_at) * 1000)
@@ -136,6 +146,7 @@ def _execute_manual_run(run_id: str, preview: dict[str, Any], db_path: Path) -> 
             run_id=run_id,
             user_goal=preview["user_goal"],
             duration_ms=duration_ms,
+            trace_id=str(trace_id) if trace_id else "",
             db_path=db_path,
         )
         create_execution_request(result, run_id=run_id, db_path=db_path)

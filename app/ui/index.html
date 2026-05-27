@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Squad Operations</title>
-  <link rel="stylesheet" href="/styles.css?v=3">
+  <link rel="stylesheet" href="/styles.css?v=4">
 </head>
 <body>
   <header class="topbar">
@@ -139,6 +139,7 @@
         </header>
         <section class="panel flow-canvas">
           <div class="flow-meta" id="flow-meta"></div>
+          <div class="trace-summary" id="flow-trace"></div>
           <div class="agent-flow" id="agent-flow"></div>
         </section>
       </section>
@@ -152,7 +153,14 @@
       </section>
 
       <section class="app-view" id="view-costs" aria-labelledby="costs-title">
-        <header class="page-header"><div><h2 id="costs-title">Custos</h2><p>Orcamento operacional estimado</p></div><span class="pill neutral">Estimativa</span></header>
+        <header class="page-header cost-header">
+          <div><h2 id="costs-title">Custos</h2><p>Orcamento planejado e consumo observado</p></div>
+          <div class="cost-actions">
+            <span class="pill neutral" id="cost-mode">Estimativa</span>
+            <button class="action" id="sync-langsmith" type="button">Sincronizar LangSmith</button>
+          </div>
+        </header>
+        <p class="sync-result muted" id="sync-result">Sincronizacao manual; a console funciona sem consulta externa.</p>
         <div class="cost-overview" id="cost-overview"></div>
         <div class="cost-grid">
           <section class="panel chart-panel"><div class="section-head"><h3>Por tier</h3></div><div id="cost-by-tier"></div></section>
@@ -182,6 +190,6 @@
     </main>
   </div>
   <div class="toast" id="toast" role="status" hidden></div>
-  <script defer src="/app.js?v=3"></script>
+  <script defer src="/app.js?v=4"></script>
 </body>
 </html>

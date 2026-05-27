@@ -180,6 +180,12 @@ h2, h3, h4, p { margin: 0; }
 .flow-header .select-field { width: min(390px, 45vw); }
 .flow-canvas { padding: 16px; min-height: 330px; }
 .flow-meta { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 22px; }
+.trace-summary {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: #344251;
+  border-bottom: 1px solid var(--border); margin: -7px 0 16px; padding-bottom: 13px; font-size: 13px;
+}
+.trace-link { color: var(--teal-dark); font-weight: 600; text-decoration: none; }
+.trace-link:hover { text-decoration: underline; }
 .agent-flow { display: flex; gap: 25px; align-items: stretch; overflow-x: auto; padding: 5px 5px 22px; }
 .agent-node {
   width: 156px; min-width: 156px; min-height: 123px; border: 1px solid var(--border);
@@ -206,7 +212,10 @@ h2, h3, h4, p { margin: 0; }
 .decision-actions { display: flex; align-items: end; gap: 10px; }
 .decision-actions .select-field { width: 200px; }
 .resolved-response { margin-top: 12px; padding: 11px; background: var(--green-bg); border-radius: 6px; color: #274837; }
-.cost-overview { display: grid; grid-template-columns: repeat(5, minmax(145px, 195px)); gap: 10px; margin-bottom: 14px; }
+.cost-header { align-items: center; }
+.cost-actions { display: flex; align-items: center; gap: 9px; }
+.sync-result { margin: -8px 0 14px; }
+.cost-overview { display: grid; grid-template-columns: repeat(4, minmax(145px, 215px)); gap: 10px; margin-bottom: 14px; }
 .cost-grid { display: grid; grid-template-columns: repeat(2, minmax(300px, 1fr)); gap: 12px; max-width: 1000px; }
 .chart-panel { padding: 15px; }
 .bar-row { margin-bottom: 12px; }
@@ -256,6 +265,7 @@ h2, h3, h4, p { margin: 0; }
   .nav-icon { display: none; }
   .content { padding: 13px; }
   .page-header { align-items: start; flex-direction: column; margin-bottom: 13px; }
+  .cost-actions { width: 100%; justify-content: space-between; }
   .page-header h2 { font-size: 20px; }
   .intake-fields, .preview-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .intake-fields .action { grid-column: 1 / -1; width: 100%; }

@@ -136,7 +136,7 @@ A console operacional inclui:
 - `Board`: kanban de entradas, execucao, decisoes humanas, aprovacoes e entregas.
 - `Fluxo`: sequencia visual dos agentes acionados em cada run.
 - `Decisoes`: escaladas pendentes com resposta e direcao registradas pelo humano.
-- `Custos`: orcamento maximo estimado por tier e projeto, incluindo o subtotal de validacoes identificadas; custo real permanece no LangSmith.
+- `Custos`: orcamento maximo estimado por tier e projeto, subtotal de validacoes e sincronizacao manual do custo/tokens observados em traces LangSmith.
 - `Ideias`: parking lot que promove candidatos para a inbox, sem auto-executar agentes.
 
 Runs identificadas como suites `eval-*` e `baseline-*` alimentam custos e qualidade, mas ficam
@@ -219,6 +219,12 @@ LangSmith nao substitui as metricas de processo da squad, como output
 aproveitado, C3 por agente, retrabalho, bloqueio do Operator e aprovacao sem
 refacao. Essas metricas continuam sendo dominio do runtime e podem ser
 publicadas no tracing como metadata/feedback quando houver baseline real.
+
+Na console, `Custos > Sincronizar LangSmith` consulta apenas runs com
+`trace_id` registrado, grava localmente custo e tokens observados e habilita o
+link autenticado do trace no painel `Fluxo`. A operacao local continua
+funcionando sem essa consulta; runs historicas sem trace permanecem apenas com
+orcamento estimado.
 
 ## O que esta validado
 

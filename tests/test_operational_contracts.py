@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import app.graph as graph_module
 import app.pilot_readiness as pilot_readiness_module
+import app.run_service as run_service_module
 from app.evals import EvalScenario, assess_scenario
 from app.mock_model import MockResponse
 from app.observability import build_run_config
@@ -874,6 +875,34 @@ class OperationalContractsTest(unittest.TestCase):
             if db_path.exists():
                 db_path.unlink()
 
+    def test_queued_manual_run_keeps_trace_identity_when_tracing_is_ready(self):
+        db_path = Path("data") / "test_queued_trace_run.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        try:
+            with (
+                patch.object(run_service_module, "langsmith_ready", return_value=True),
+                patch.object(run_service_module.RUN_EXECUTOR, "submit") as submit,
+            ):
+                queued = run_service_module.enqueue_manual_run(
+                    {
+                        "user_goal": "Documentar README.",
+                        "workspace_root": ".",
+                        "project_id": "portal",
+                        "initiative_id": "docs",
+                        "cost_confirmed": True,
+                    },
+                    db_path=db_path,
+                )
+
+            self.assertTrue(queued["trace_id"])
+            run = recent_runs_snapshot(db_path=db_path)["runs"][0]
+            self.assertEqual(run["trace_id"], queued["trace_id"])
+            self.assertEqual(str(submit.call_args.args[4]), queued["trace_id"])
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
     def test_operational_views_surface_flow_cost_and_human_resolution(self):
         from http.server import ThreadingHTTPServer
 
@@ -910,7 +939,13 @@ class OperationalContractsTest(unittest.TestCase):
                 },
                 "orchestrator_checks": {},
             }
-            record_run(result, run_id="run_decision", user_goal="Definir preco.", db_path=db_path)
+            record_run(
+                result,
+                run_id="run_decision",
+                user_goal="Definir preco.",
+                trace_id="trace_decision",
+                db_path=db_path,
+            )
             validation_result = {
                 **result,
                 "work_scope": {
@@ -919,7 +954,13 @@ class OperationalContractsTest(unittest.TestCase):
                     "memory_namespace": "squad-v5-lite:baseline-governanca",
                 },
             }
-            record_run(validation_result, run_id="run_validation_decision", user_goal="Validar gate.", db_path=db_path)
+            record_run(
+                validation_result,
+                run_id="run_validation_decision",
+                user_goal="Validar gate.",
+                trace_id="trace_validation",
+                db_path=db_path,
+            )
             connection = sqlite3.connect(db_path)
             try:
                 connection.execute("DELETE FROM human_decisions")
@@ -941,7 +982,19 @@ class OperationalContractsTest(unittest.TestCase):
             self.assertEqual(costs["validation_estimated_budget_usd"], 0.15)
             self.assertEqual(metrics_snapshot(db_path, include_validation=False)["run_count"], 1)
 
-            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(db_path))
+            def fake_trace_loader(trace_id):
+                return {
+                    "status": "synced",
+                    "observed_cost_usd": 0.021 if trace_id == "trace_decision" else 0.005,
+                    "observed_tokens": 321 if trace_id == "trace_decision" else 50,
+                    "trace_url": f"https://smith.langchain.com/r/{trace_id}",
+                    "error": "",
+                }
+
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", 0),
+                make_handler(db_path, trace_loader=fake_trace_loader),
+            )
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             base_url = f"http://127.0.0.1:{server.server_port}"
@@ -952,6 +1005,21 @@ class OperationalContractsTest(unittest.TestCase):
                 dashboard = json.loads(response.read().decode("utf-8"))
             self.assertEqual(dashboard["metrics"]["run_count"], 1)
             self.assertEqual(dashboard["recent_runs"]["runs"][0]["run_id"], "run_decision")
+            sync_request = urllib.request.Request(
+                f"{base_url}/api/observability/sync",
+                data=json.dumps({"run_id": "run_decision"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(sync_request) as response:
+                synced = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(synced["synced_count"], 1)
+            self.assertEqual(synced["costs"]["observed_cost_usd"], 0.021)
+            synced_flow = run_flow_snapshot(run_id="run_decision", db_path=db_path)
+            self.assertEqual(
+                synced_flow["run"]["trace_url"],
+                "https://smith.langchain.com/r/trace_decision",
+            )
             api_request = urllib.request.Request(
                 f"{base_url}/api/decisions/decision_run_decision/respond",
                 data=json.dumps(

@@ -62,6 +62,13 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 agent_count INTEGER NOT NULL DEFAULT 0,
                 c3_count INTEGER NOT NULL DEFAULT 0,
                 duration_ms INTEGER,
+                trace_id TEXT NOT NULL DEFAULT '',
+                observed_cost_usd REAL,
+                observed_tokens INTEGER,
+                trace_url TEXT NOT NULL DEFAULT '',
+                observability_status TEXT NOT NULL DEFAULT '',
+                observability_error TEXT NOT NULL DEFAULT '',
+                observability_synced_at TEXT,
                 operational_packet_json TEXT NOT NULL
             );
 
@@ -261,12 +268,33 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
             "memory_namespace": "TEXT NOT NULL DEFAULT ''",
             "execution_tier": "TEXT NOT NULL DEFAULT ''",
             "execution_policy_json": "TEXT NOT NULL DEFAULT '{}'",
+            "trace_id": "TEXT NOT NULL DEFAULT ''",
+            "observed_cost_usd": "REAL",
+            "observed_tokens": "INTEGER",
+            "trace_url": "TEXT NOT NULL DEFAULT ''",
+            "observability_status": "TEXT NOT NULL DEFAULT ''",
+            "observability_error": "TEXT NOT NULL DEFAULT ''",
+            "observability_synced_at": "TEXT",
         }
         for column_name, column_type in run_migrations.items():
             if column_name not in run_columns:
                 connection.execute(
                     f"ALTER TABLE runs ADD COLUMN {column_name} {column_type}"
                 )
+        connection.execute(
+            """
+            UPDATE runs SET trace_id=(
+                SELECT baseline_reviews.trace_id FROM baseline_reviews
+                WHERE baseline_reviews.run_id=runs.run_id AND baseline_reviews.trace_id IS NOT NULL
+                LIMIT 1
+            )
+            WHERE trace_id=''
+              AND EXISTS (
+                SELECT 1 FROM baseline_reviews
+                WHERE baseline_reviews.run_id=runs.run_id AND baseline_reviews.trace_id IS NOT NULL
+              )
+            """
+        )
         request_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(execution_requests)").fetchall()
@@ -297,6 +325,7 @@ def record_run(
     run_id: str,
     user_goal: str,
     duration_ms: int | None = None,
+    trace_id: str = "",
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> None:
     initialize_schema(db_path)
@@ -319,8 +348,8 @@ def record_run(
                 status, cos_decision,
                 route_action, route_decision, human_escalation_created,
                 execution_ready, agent_count, c3_count, duration_ms,
-                operational_packet_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                trace_id, operational_packet_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id) DO UPDATE SET
                 project_id=excluded.project_id,
                 initiative_id=excluded.initiative_id,
@@ -337,6 +366,10 @@ def record_run(
                 agent_count=excluded.agent_count,
                 c3_count=excluded.c3_count,
                 duration_ms=excluded.duration_ms,
+                trace_id=CASE
+                    WHEN excluded.trace_id != '' THEN excluded.trace_id
+                    ELSE runs.trace_id
+                END,
                 operational_packet_json=excluded.operational_packet_json
             """,
             (
@@ -358,6 +391,7 @@ def record_run(
                 len(outputs),
                 c3_count,
                 duration_ms,
+                trace_id,
                 json.dumps(packet, ensure_ascii=False),
             ),
         )
@@ -438,6 +472,7 @@ def record_run_started(
     memory_namespace: str,
     active_flow: str,
     execution_policy: dict[str, Any],
+    trace_id: str = "",
     status: str = "queued",
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> None:
@@ -450,8 +485,8 @@ def record_run_started(
                 run_id, created_at, project_id, initiative_id, memory_namespace,
                 user_goal, active_flow, execution_tier, execution_policy_json,
                 status, execution_ready, agent_count, c3_count,
-                operational_packet_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, '{}')
+                trace_id, operational_packet_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, '{}')
             """,
             (
                 run_id,
@@ -464,6 +499,7 @@ def record_run_started(
                 execution_policy.get("execution_tier", ""),
                 json.dumps(execution_policy, ensure_ascii=False),
                 status,
+                trace_id,
             ),
         )
 
@@ -908,7 +944,8 @@ def recent_runs_snapshot(
             f"""
             SELECT run_id, created_at, project_id, initiative_id, user_goal,
                 active_flow, execution_tier, status, execution_ready,
-                agent_count, duration_ms
+                agent_count, duration_ms, trace_id, observed_cost_usd,
+                observed_tokens, trace_url, observability_status
             FROM runs
             {scope_filter}
             ORDER BY created_at DESC
@@ -1129,7 +1166,9 @@ def run_flow_snapshot(
         run = connection.execute(
             """
             SELECT run_id, project_id, initiative_id, user_goal, active_flow,
-                   execution_tier, status, cos_decision, route_decision
+                   execution_tier, status, cos_decision, route_decision,
+                   trace_id, observed_cost_usd, observed_tokens, trace_url,
+                   observability_status, observability_error, observability_synced_at
             FROM runs WHERE run_id=?
             """,
             (run_id,),
@@ -1149,13 +1188,66 @@ def run_flow_snapshot(
     return {"run": dict(run) if run else None, "agents": agents, "links": links}
 
 
+def trace_sync_candidates(
+    *,
+    run_id: str | None = None,
+    limit: int = 100,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> list[dict[str, str]]:
+    initialize_schema(db_path)
+    safe_limit = max(1, min(limit, 100))
+    with _connection(db_path) as connection:
+        if run_id:
+            rows = connection.execute(
+                "SELECT run_id, trace_id FROM runs WHERE run_id=? AND trace_id!=''",
+                (run_id,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT run_id, trace_id FROM runs
+                WHERE trace_id!=''
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def update_run_observability(
+    run_id: str,
+    observation: dict[str, Any],
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> None:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE runs SET observed_cost_usd=?, observed_tokens=?, trace_url=?,
+                observability_status=?, observability_error=?, observability_synced_at=?
+            WHERE run_id=?
+            """,
+            (
+                observation.get("observed_cost_usd"),
+                observation.get("observed_tokens"),
+                str(observation.get("trace_url", ""))[:1000],
+                str(observation.get("status", "failed"))[:40],
+                str(observation.get("error", ""))[:500],
+                datetime.now(timezone.utc).isoformat(),
+                run_id,
+            ),
+        )
+
+
 def cost_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
     initialize_schema(db_path)
     with _connection(db_path) as connection:
         rows = connection.execute(
             """
             SELECT project_id, initiative_id, execution_tier, execution_policy_json,
-                   status, agent_count
+                   status, agent_count, trace_id, observed_cost_usd, observed_tokens,
+                   observability_status
             FROM runs ORDER BY created_at DESC
             """
         ).fetchall()
@@ -1164,6 +1256,10 @@ def cost_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
     total_budget = 0.0
     validation_budget = 0.0
     validation_runs = 0
+    observed_cost = 0.0
+    observed_tokens = 0
+    traced_runs = 0
+    synced_runs = 0
     for row in rows:
         policy = json.loads(row["execution_policy_json"] or "{}")
         estimated = float(policy.get("max_cost_usd") or 0)
@@ -1171,6 +1267,12 @@ def cost_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
         if _is_validation_initiative(row["initiative_id"]):
             validation_budget += estimated
             validation_runs += 1
+        if row["trace_id"]:
+            traced_runs += 1
+        if row["observability_status"] == "synced":
+            synced_runs += 1
+            observed_cost += float(row["observed_cost_usd"] or 0)
+            observed_tokens += int(row["observed_tokens"] or 0)
         tier = row["execution_tier"] or "legacy"
         tier_item = by_tier.setdefault(tier, {"tier": tier, "runs": 0, "estimated_budget_usd": 0.0})
         tier_item["runs"] += 1
@@ -1191,7 +1293,11 @@ def cost_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
         "estimated_budget_usd": round(total_budget, 2),
         "validation_runs": validation_runs,
         "validation_estimated_budget_usd": round(validation_budget, 2),
-        "real_cost_available": False,
+        "observed_cost_usd": round(observed_cost, 6),
+        "observed_tokens": observed_tokens,
+        "traced_runs": traced_runs,
+        "synced_runs": synced_runs,
+        "real_cost_available": synced_runs > 0,
         "tracing_enabled": os.getenv("LANGSMITH_TRACING", "").lower() == "true",
         "sampling_rate": sampling_rate,
         "by_tier": sorted(by_tier.values(), key=lambda item: item["estimated_budget_usd"], reverse=True),

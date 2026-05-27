@@ -1,7 +1,7 @@
 from app.context_policy import build_context_bundle
 from app.retry_policy import initialize_retry_state
 from app.run_registry import generate_run_id, append_run_start, append_run_end
-from app.observability import build_run_config
+from app.observability import build_run_config, langsmith_ready
 from app.operational_store import metrics_snapshot, record_run
 from app.execution_engine import create_execution_request
 from app.intake import decide_intake
@@ -10,6 +10,7 @@ from app.project_scope import resolve_work_scope
 
 import sys
 from time import perf_counter
+from uuid import uuid4
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -20,6 +21,7 @@ from app.graph import graph
 if __name__ == "__main__":
     user_goal = input("Digite o objetivo do projeto: ")
     run_id = generate_run_id()
+    trace_id = uuid4() if langsmith_ready() else None
     append_run_start(run_id=run_id, user_goal=user_goal)
 
     manual_validation_result = input(
@@ -65,6 +67,7 @@ if __name__ == "__main__":
         project_id=preflight_scope.project_id,
         initiative_id=preflight_scope.initiative_id,
         execution_policy=preflight_intake.execution_policy,
+        trace_id=trace_id,
     ))
     duration_ms = round((perf_counter() - started_at) * 1000)
 
@@ -81,6 +84,7 @@ if __name__ == "__main__":
         run_id=run_id,
         user_goal=user_goal,
         duration_ms=duration_ms,
+        trace_id=str(trace_id) if trace_id else "",
     )
     execution_request = create_execution_request(result, run_id=run_id)
     print("\nDEBUG KEYS:", result.keys())
