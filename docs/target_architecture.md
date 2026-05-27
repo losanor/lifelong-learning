@@ -31,6 +31,7 @@ Telas operacionais locais implementadas:
 - Orquestracao com mapa configurado da squad, distincao entre agentes fixos/sob demanda, rotas condicionais, gate humano e historico executado por atividade.
 - Decisoes humanas pendentes com resposta registrada e retomada auditavel.
 - Custos com orcamento estimado agregado por tier/projeto, subtotal de validacoes e sincronizacao manual do custo observado/link dos traces LangSmith.
+- Indicadores com historico de qualidade, custo observado, latencia e escaladas.
 - Parking lot de ideias com promocao supervisionada para a caixa de entrada.
 - Approval inbox para editar, aprovar ou rejeitar efeitos antes de executar.
 
@@ -51,6 +52,7 @@ Telas operacionais locais implementadas:
 - Segundo checkpoint humano antes de futura aplicacao do patch. (implementado)
 - Escrita controlada no workspace com rollback. (implementado)
 - Validacao automatica allowlisted, diff e evidencias. (implementado)
+- Branch/commit supervisionado e publicacao separada de PR draft. (implementado local)
 - Matriz executavel de autorizacoes. (implementado)
 
 ### M3 - Durable HITL
@@ -68,11 +70,26 @@ PostgreSQL, incluindo checkpoints internos do grafo LangGraph.
 - Console operacional local consumindo API do runtime. (implementado)
 - Aprovacoes, custo/tier, diffs, validacoes, timeline e runs recentes. (implementado)
 - Intake manual com previa deterministica de fluxo/custo e disparo supervisionado. (implementado local)
-- Board, mapa de orquestracao, execucoes entre agentes, fila de decisoes humanas e parking lot supervisionado. (implementado local)
+- Board, mapa de orquestracao, handoffs reais por execucao, fila de decisoes humanas e parking lot supervisionado. (implementado local)
 - Separacao de runs `eval-*`/`baseline-*` das filas diarias, preservando custo de validacao. (implementado local)
 - Integrar custo observado e link direto do trace LangSmith por run. (implementado local, sincronizacao manual)
+- Historico conjunto de qualidade, custo observado, latencia e escaladas. (implementado local)
 - Consolidar custo observado de runs historicas ou executadas sem trace. (pendente)
 - Substituir API local pelo Agent Server no deployment distribuido.
+
+### Criterios objetivos de migracao
+
+O piloto local permanece adequado enquanto houver um operador e uso em
+workstation confiavel. A migracao para Agent Server/PostgreSQL deve ser
+priorizada quando ocorrer qualquer um destes sinais:
+
+- dois ou mais operadores precisarem aprovar ou acompanhar execucoes simultaneamente;
+- necessidade de acesso remoto autenticado ou disponibilidade fora da sessao local;
+- mais de 10 itens pendentes recorrentes na fila ou concorrencia real de runs;
+- perda ou indisponibilidade do SQLite local se tornar risco inaceitavel para auditoria.
+
+O procedimento operacional e os controles de contingencia estao em
+`docs/operations_runbook.md`.
 
 ### M5 - Automacoes externas
 

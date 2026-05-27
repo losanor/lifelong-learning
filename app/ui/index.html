@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Squad Operations</title>
-  <link rel="stylesheet" href="/styles.css?v=6">
+  <link rel="stylesheet" href="/styles.css?v=7">
 </head>
 <body>
   <header class="topbar">
@@ -25,6 +25,7 @@
       <button class="nav-item" type="button" data-view="flow"><span class="nav-icon">O</span>Orquestracao</button>
       <button class="nav-item" type="button" data-view="decisions"><span class="nav-icon">D</span>Decisoes <span class="nav-count" id="decision-badge">0</span></button>
       <button class="nav-item" type="button" data-view="costs"><span class="nav-icon">$</span>Custos</button>
+      <button class="nav-item" type="button" data-view="performance"><span class="nav-icon">K</span>Indicadores</button>
       <button class="nav-item" type="button" data-view="ideas"><span class="nav-icon">+</span>Ideias</button>
     </nav>
 
@@ -116,6 +117,17 @@
                 </div>
                 <div class="actions" id="actions"></div>
               </section>
+              <section class="git-panel" id="git-panel" hidden>
+                <div class="section-head"><h4>Entrega Git supervisionada</h4><span class="pill neutral" id="git-status"></span></div>
+                <div class="git-fields">
+                  <label class="field"><span>Branch de entrega</span><input id="git-branch" type="text" placeholder="squad/minha-entrega"></label>
+                  <label class="field"><span>Mensagem do commit</span><input id="git-message" type="text" placeholder="Deliver iniciativa"></label>
+                  <label class="field"><span>Titulo do PR draft</span><input id="git-pr-title" type="text"></label>
+                </div>
+                <label class="objective-field git-body"><span>Resumo para revisao no PR</span><textarea id="git-pr-body"></textarea></label>
+                <p class="muted" id="git-summary"></p>
+                <div class="actions" id="git-actions"></div>
+              </section>
               <section class="evidence" id="evidence" hidden><h4>Evidencias</h4><pre id="evidence-content"></pre></section>
               <section class="evidence" id="memory" hidden><h4>Memoria da iniciativa</h4><pre id="memory-content"></pre></section>
             </article>
@@ -184,6 +196,8 @@
             <div class="flow-meta" id="flow-meta"></div>
             <div class="trace-summary" id="flow-trace"></div>
             <div class="agent-flow" id="agent-flow"></div>
+            <div class="handoff-head"><h4>Passagens registradas</h4><span class="pill neutral" id="handoff-source"></span></div>
+            <div class="handoff-list" id="handoff-list"></div>
           </section>
         </section>
       </section>
@@ -212,6 +226,27 @@
         </div>
       </section>
 
+      <section class="app-view" id="view-performance" aria-labelledby="performance-title">
+        <header class="page-header">
+          <div><h2 id="performance-title">Indicadores</h2><p>Qualidade, latencia e custo observado ao longo do uso</p></div>
+          <span class="pill done">Meta de qualidade 8,7</span>
+        </header>
+        <div class="performance-grid">
+          <section class="panel chart-panel">
+            <div class="section-head"><h3>Operacao diaria</h3></div>
+            <div id="performance-daily"></div>
+          </section>
+          <section class="panel chart-panel">
+            <div class="section-head"><h3>Avaliacoes deterministicas</h3></div>
+            <div id="performance-evals"></div>
+          </section>
+          <section class="panel chart-panel">
+            <div class="section-head"><h3>Baselines reais revisadas</h3></div>
+            <div id="performance-baselines"></div>
+          </section>
+        </div>
+      </section>
+
       <section class="app-view" id="view-ideas" aria-labelledby="ideas-title">
         <header class="page-header"><div><h2 id="ideas-title">Parking lot</h2><p>Oportunidades candidatas para avaliacao</p></div></header>
         <div class="ideas-grid">
@@ -234,6 +269,6 @@
     </main>
   </div>
   <div class="toast" id="toast" role="status" hidden></div>
-  <script defer src="/app.js?v=6"></script>
+  <script defer src="/app.js?v=7"></script>
 </body>
 </html>

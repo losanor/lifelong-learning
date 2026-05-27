@@ -37,6 +37,7 @@ Camadas compartilhadas:
 - `docs/target_architecture.md`: stack alvo e roadmap da interface propria.
 - `langgraph.json` e `docs/deployment.md`: empacotamento e operacao no Agent Server.
 - `docs/free_pilot.md`: operacao local com LangSmith Developer e controle de custo.
+- `docs/operations_runbook.md`: rotina diaria, recuperacao, backup e criterios de migracao.
 - `app/project_scope.py` e `app/scoped_storage.py`: memoria por projeto/iniciativa.
 - `app/execution_policy.py`: tiers, budgets e aprovacoes previstas.
 - `app/execution_engine.py`: fila de execucao e approval gate em modo dry-run.
@@ -99,7 +100,9 @@ candidato, que precisa afetar somente `target_refs` declarados e passar em
 segunda aprovacao o move para `approved_for_apply`, ainda sem escrever no
 workspace. O comando `apply` aplica somente esse patch aprovado, executa
 validacoes allowlisted e reverte automaticamente a alteracao se alguma falhar.
-Commit e push permanecem manuais.
+Apos validacao, a entrega Git continua deliberada: uma acao humana cria
+branch/commit somente com os alvos aprovados; outra acao independente publica
+a branch e abre um PR draft para revisao. Merge nunca e automatico.
 
 Para consultar e decidir a fila local:
 
@@ -109,6 +112,8 @@ Para consultar e decidir a fila local:
 .\.venv\Scripts\python.exe -m app.review_execution prepare <request_id> --patch-file .\candidate.patch
 .\.venv\Scripts\python.exe -m app.review_execution approve-apply <request_id> --by owner --notes "Patch validado."
 .\.venv\Scripts\python.exe -m app.review_execution apply <request_id> --validate git_diff_check --validate python_compile
+.\.venv\Scripts\python.exe -m app.review_execution commit <request_id> --branch squad/minha-entrega --message "Deliver iniciativa"
+.\.venv\Scripts\python.exe -m app.review_execution publish <request_id> --title "Entrega para revisao" --body "Resumo para o revisor."
 .\.venv\Scripts\python.exe -m app.review_execution rollback <request_id> --reason "Cancelar entrega."
 .\.venv\Scripts\python.exe -m app.review_execution reject <request_id> --by owner --notes "Revisar escopo."
 .\.venv\Scripts\python.exe -m app.workflow_recovery pending
@@ -134,9 +139,10 @@ A API rejeita mutacoes originadas por paginas web externas ao host local.
 A console operacional inclui:
 
 - `Board`: kanban de entradas, execucao, decisoes humanas, aprovacoes e entregas.
-- `Orquestracao`: mapa configurado da squad com agentes fixos/sob demanda, rotas condicionais e gate humano; a aba `Execucoes` mostra a sequencia observada em cada atividade.
+- `Orquestracao`: mapa configurado da squad com agentes fixos/sob demanda, rotas condicionais e gate humano; a aba `Execucoes` mostra outputs e passagens registradas entre agentes em cada atividade.
 - `Decisoes`: escaladas pendentes com resposta e direcao registradas pelo humano.
 - `Custos`: orcamento maximo estimado por tier e projeto, subtotal de validacoes e sincronizacao manual do custo/tokens observados em traces LangSmith.
+- `Indicadores`: historico operacional de runs, latencia, custo observado, escaladas, evals e baselines reais.
 - `Ideias`: parking lot que promove candidatos para a inbox, sem auto-executar agentes.
 
 Runs identificadas como suites `eval-*` e `baseline-*` alimentam custos e qualidade, mas ficam
@@ -222,7 +228,7 @@ publicadas no tracing como metadata/feedback quando houver baseline real.
 
 Na console, `Custos > Sincronizar LangSmith` consulta apenas runs com
 `trace_id` registrado, grava localmente custo e tokens observados e habilita o
-link autenticado do trace no painel `Fluxo`. A operacao local continua
+link autenticado do trace em `Orquestracao > Execucoes`. A operacao local continua
 funcionando sem essa consulta; runs historicas sem trace permanecem apenas com
 orcamento estimado.
 
@@ -245,10 +251,11 @@ orcamento estimado.
 - O CoS recebe os checks operacionais antes de decidir a rota.
 - O CoS usa contexto decisorio compacto no caminho normal; `full_context` fica
   para auditoria e debug.
-- O SQLite registra runs e artefatos estruturados sem depender de parsing de
-  logs Markdown.
+- O SQLite registra runs, artefatos e handoffs reais estruturados sem depender
+  de parsing de logs Markdown.
 - O Execution Engine registra pedidos, diffs candidatos, validacao de
-  aplicabilidade, aplicacao controlada, validacoes allowlisted e rollback.
+  aplicabilidade, aplicacao controlada, validacoes allowlisted, rollback e
+  entrega Git supervisionada ate PR draft.
 - Cada transicao humana/executora produz checkpoint SQLite append-only; apos
   reinicio, `workflow_recovery` recupera itens pendentes e sua timeline.
 - Novas runs gravam logs operacionais sob `data/namespaces/<projeto>/<iniciativa>/`;
@@ -269,8 +276,8 @@ orcamento estimado.
   pesquisa; sem fonte factual o prompt deve marcar C3.
 - O `Workspace Context` informa refs e estado Git; a aplicacao controlada exige
   diff aprovado, validacoes e evidencia antes de qualquer entrega Git.
-- A aplicacao controlada ainda nao cria commits ou publica branches; esses
-  efeitos Git seguem como operacao deliberada apos revisar evidencias.
+- Branch, commit, push e abertura de PR draft exigem acoes humanas separadas;
+  a console nao faz merge nem publica uma entrega sem aprovacao explicita.
 - O checkpoint duravel local cobre o workflow de efeitos e aprovacoes. Em
   producao distribuida, o backend recomendado continua sendo Agent Server com
   PostgreSQL para retomar tambem a execucao interna do grafo.

@@ -87,6 +87,21 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 FOREIGN KEY (run_id) REFERENCES runs(run_id)
             );
 
+            CREATE TABLE IF NOT EXISTS handoff_events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                source_agent TEXT NOT NULL,
+                target_agent TEXT NOT NULL,
+                artifact TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT '',
+                ece TEXT NOT NULL DEFAULT '',
+                blockers TEXT NOT NULL DEFAULT '',
+                next_step TEXT NOT NULL DEFAULT '',
+                escalate_to_cos TEXT NOT NULL DEFAULT '',
+                memory_namespace TEXT NOT NULL DEFAULT ''
+            );
+
             CREATE TABLE IF NOT EXISTS eval_results (
                 evaluation_id TEXT NOT NULL,
                 scenario_id TEXT NOT NULL,
@@ -174,6 +189,22 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 FOREIGN KEY (request_id) REFERENCES execution_requests(request_id)
             );
 
+            CREATE TABLE IF NOT EXISTS git_deliveries (
+                request_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                delivery_status TEXT NOT NULL,
+                workspace_root TEXT NOT NULL,
+                branch_name TEXT NOT NULL DEFAULT '',
+                base_branch TEXT NOT NULL DEFAULT '',
+                commit_sha TEXT NOT NULL DEFAULT '',
+                commit_message TEXT NOT NULL DEFAULT '',
+                remote_name TEXT NOT NULL DEFAULT 'origin',
+                pr_url TEXT NOT NULL DEFAULT '',
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                FOREIGN KEY (request_id) REFERENCES execution_requests(request_id)
+            );
+
             CREATE TABLE IF NOT EXISTS workflow_checkpoints (
                 checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 thread_id TEXT NOT NULL,
@@ -228,6 +259,8 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_workflow_checkpoints_thread
                 ON workflow_checkpoints(thread_id, checkpoint_id);
+            CREATE INDEX IF NOT EXISTS idx_handoff_events_run
+                ON handoff_events(run_id, event_id);
             CREATE INDEX IF NOT EXISTS idx_human_decisions_status
                 ON human_decisions(status, updated_at);
             CREATE INDEX IF NOT EXISTS idx_parking_lot_status
@@ -560,6 +593,47 @@ def record_eval_result(
         )
 
 
+def record_handoff_event(
+    *,
+    run_id: str,
+    source_agent: str,
+    target_agent: str,
+    artifact: str,
+    summary: str,
+    ece: str,
+    blockers: str = "",
+    next_step: str = "",
+    escalate_to_cos: str = "",
+    memory_namespace: str = "",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> None:
+    if not run_id.strip():
+        return
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO handoff_events (
+                run_id, occurred_at, source_agent, target_agent, artifact,
+                summary, ece, blockers, next_step, escalate_to_cos, memory_namespace
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id[:120],
+                datetime.now(timezone.utc).isoformat(),
+                source_agent[:120],
+                target_agent[:120],
+                artifact[:240],
+                summary[:4000],
+                ece[:40],
+                blockers[:2000],
+                next_step[:2000],
+                escalate_to_cos[:500],
+                memory_namespace[:250],
+            ),
+        )
+
+
 def record_execution_request(
     request: dict[str, Any],
     *,
@@ -588,6 +662,8 @@ def record_execution_request(
                         'awaiting_apply_approval',
                         'approved_for_apply',
                         'applied_validated',
+                        'git_committed',
+                        'pr_opened',
                         'rolled_back',
                         'rejected'
                     )
@@ -846,6 +922,71 @@ def record_execution_application(
     return execution_request_snapshot(request_id=request_id, db_path=db_path)["requests"][0]
 
 
+def record_git_delivery(
+    delivery: dict[str, Any],
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    initialize_schema(db_path)
+    request_id = delivery["request_id"]
+    with _connection(db_path) as connection:
+        request = connection.execute(
+            "SELECT status FROM execution_requests WHERE request_id=?",
+            (request_id,),
+        ).fetchone()
+        if request is None:
+            raise ValueError("Execution request not found.")
+        now = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            """
+            INSERT INTO git_deliveries (
+                request_id, created_at, updated_at, delivery_status,
+                workspace_root, branch_name, base_branch, commit_sha,
+                commit_message, remote_name, pr_url, evidence_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(request_id) DO UPDATE SET
+                updated_at=excluded.updated_at,
+                delivery_status=excluded.delivery_status,
+                workspace_root=excluded.workspace_root,
+                branch_name=excluded.branch_name,
+                base_branch=excluded.base_branch,
+                commit_sha=excluded.commit_sha,
+                commit_message=excluded.commit_message,
+                remote_name=excluded.remote_name,
+                pr_url=excluded.pr_url,
+                evidence_json=excluded.evidence_json
+            """,
+            (
+                request_id,
+                now,
+                now,
+                delivery["delivery_status"],
+                delivery["workspace_root"],
+                delivery.get("branch_name", ""),
+                delivery.get("base_branch", ""),
+                delivery.get("commit_sha", ""),
+                delivery.get("commit_message", ""),
+                delivery.get("remote_name", "origin"),
+                delivery.get("pr_url", ""),
+                json.dumps(delivery.get("evidence", {}), ensure_ascii=False),
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE execution_requests
+            SET status=?, status_reason=?, effects_enabled=1, updated_at=?
+            WHERE request_id=?
+            """,
+            (
+                delivery["request_status"],
+                delivery.get("status_reason", ""),
+                now,
+                request_id,
+            ),
+        )
+    return execution_request_snapshot(request_id=request_id, db_path=db_path)["requests"][0]
+
+
 def record_workflow_checkpoint(
     *,
     thread_id: str,
@@ -907,7 +1048,8 @@ def pending_work_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, An
         "awaiting_patch": "Enviar diff corrigido.",
         "awaiting_apply_approval": "Aprovar ou rejeitar aplicacao.",
         "approved_for_apply": "Aplicar patch aprovado e executar validacoes.",
-        "applied_validated": "Revisar entrega; commit/push manual ou rollback.",
+        "applied_validated": "Criar branch e commit supervisionado ou reverter aplicacao.",
+        "git_committed": "Publicar branch e abrir PR draft apos revisao humana.",
     }
     snapshot = execution_request_snapshot(db_path=db_path)
     pending: list[dict[str, Any]] = []
@@ -1180,12 +1322,35 @@ def run_flow_snapshot(
             """,
             (run_id,),
         ).fetchall()
+        handoff_rows = connection.execute(
+            """
+            SELECT event_id, occurred_at, source_agent, target_agent, artifact,
+                   summary, ece, blockers, next_step, escalate_to_cos
+            FROM handoff_events WHERE run_id=? ORDER BY event_id ASC
+            """,
+            (run_id,),
+        ).fetchall()
     agents = [dict(row) for row in rows]
-    links = [
-        {"from": agents[index]["agent_name"], "to": agents[index + 1]["agent_name"]}
-        for index in range(len(agents) - 1)
-    ]
-    return {"run": dict(run) if run else None, "agents": agents, "links": links}
+    handoffs = [dict(row) for row in handoff_rows]
+    if handoffs:
+        links = [
+            {"from": item["source_agent"], "to": item["target_agent"], "artifact": item["artifact"]}
+            for item in handoffs
+        ]
+        link_source = "recorded_handoffs"
+    else:
+        links = [
+            {"from": agents[index]["agent_name"], "to": agents[index + 1]["agent_name"]}
+            for index in range(len(agents) - 1)
+        ]
+        link_source = "legacy_output_sequence"
+    return {
+        "run": dict(run) if run else None,
+        "agents": agents,
+        "handoffs": handoffs,
+        "links": links,
+        "link_source": link_source,
+    }
 
 
 def trace_sync_candidates(
@@ -1482,6 +1647,15 @@ def execution_request_snapshot(
                 request["application"]["git_evidence"] = json.loads(
                     request["application"].pop("git_evidence_json")
                 )
+            delivery = connection.execute(
+                "SELECT * FROM git_deliveries WHERE request_id=?",
+                (request["request_id"],),
+            ).fetchone()
+            request["git_delivery"] = dict(delivery) if delivery else None
+            if request["git_delivery"]:
+                request["git_delivery"]["evidence"] = json.loads(
+                    request["git_delivery"].pop("evidence_json")
+                )
     return {"request_count": len(requests), "requests": requests}
 
 
@@ -1650,6 +1824,72 @@ def metrics_snapshot(
             }
             for row in request_rows
         ],
+    }
+
+
+def performance_history_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        daily_rows = connection.execute(
+            """
+            SELECT substr(created_at, 1, 10) AS day,
+                   COUNT(*) AS run_count,
+                   COALESCE(AVG(duration_ms), 0) AS average_duration_ms,
+                   COALESCE(SUM(human_escalation_created), 0) AS escalation_count,
+                   COALESCE(SUM(observed_cost_usd), 0) AS observed_cost_usd,
+                   SUM(CASE WHEN observability_status='synced' THEN 1 ELSE 0 END) AS synced_runs
+            FROM runs
+            WHERE initiative_id NOT LIKE 'eval-%' AND initiative_id NOT LIKE 'baseline-%'
+            GROUP BY substr(created_at, 1, 10)
+            ORDER BY day DESC LIMIT 14
+            """
+        ).fetchall()
+        evaluation_rows = connection.execute(
+            """
+            SELECT evaluation_id, MAX(executed_at) AS executed_at,
+                   COUNT(*) AS scenario_count,
+                   ROUND(AVG(score), 2) AS average_score,
+                   SUM(passed) AS passed_count
+            FROM eval_results
+            GROUP BY evaluation_id
+            ORDER BY executed_at DESC LIMIT 12
+            """
+        ).fetchall()
+        baseline_rows = connection.execute(
+            """
+            SELECT baseline_id, MAX(executed_at) AS executed_at,
+                   COUNT(*) AS scenario_count,
+                   ROUND(AVG(CASE WHEN execution_status='completed' THEN automatic_score END), 2)
+                     AS automatic_average_score,
+                   ROUND(AVG(
+                     CASE WHEN human_correctness IS NOT NULL THEN
+                       (human_correctness + human_practical_utility + human_scope_control
+                        + human_next_step_clarity + human_execution_confidence) / 5.0
+                     END
+                   ), 2) AS human_average_score
+            FROM baseline_reviews
+            GROUP BY baseline_id
+            ORDER BY executed_at DESC LIMIT 12
+            """
+        ).fetchall()
+    daily = [
+        {
+            "day": row["day"],
+            "run_count": row["run_count"],
+            "average_duration_ms": round(row["average_duration_ms"] or 0, 2),
+            "escalation_count": row["escalation_count"],
+            "observed_cost_usd": round(row["observed_cost_usd"] or 0, 6),
+            "synced_runs": row["synced_runs"],
+        }
+        for row in daily_rows
+    ]
+    evaluations = [dict(row) for row in evaluation_rows]
+    baselines = [dict(row) for row in baseline_rows]
+    return {
+        "daily_runs": daily,
+        "evaluations": evaluations,
+        "baselines": baselines,
+        "quality_target": 8.7,
     }
 
 

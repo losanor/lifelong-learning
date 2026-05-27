@@ -9,10 +9,12 @@ from pathlib import Path
 
 from app.execution_engine import (
     apply_execution_request,
+    commit_git_delivery,
     decide_apply_execution,
     decide_execution_request,
     list_execution_requests,
     prepare_execution_request,
+    publish_git_delivery,
     rollback_execution_request,
 )
 
@@ -38,6 +40,17 @@ def main() -> None:
     rollback.add_argument("request_id")
     rollback.add_argument("--workspace-root", default=".")
     rollback.add_argument("--reason", default="Human requested rollback.")
+    commit = subparsers.add_parser("commit", help="Create a supervised delivery branch and commit.")
+    commit.add_argument("request_id")
+    commit.add_argument("--workspace-root", default=".")
+    commit.add_argument("--branch", default="")
+    commit.add_argument("--message", default="")
+    commit.add_argument("--remote", default="origin")
+    publish = subparsers.add_parser("publish", help="Push the delivery branch and open a draft PR.")
+    publish.add_argument("request_id")
+    publish.add_argument("--workspace-root", default=".")
+    publish.add_argument("--title", default="")
+    publish.add_argument("--body", default="")
 
     for decision in ("approve", "reject", "approve-apply", "reject-apply"):
         command = subparsers.add_parser(decision, help=f"{decision.title()} one request.")
@@ -66,6 +79,21 @@ def main() -> None:
             args.request_id,
             workspace_root=args.workspace_root,
             reason=args.reason,
+        )
+    elif args.command == "commit":
+        result = commit_git_delivery(
+            args.request_id,
+            workspace_root=args.workspace_root,
+            branch_name=args.branch,
+            commit_message=args.message,
+            remote_name=args.remote,
+        )
+    elif args.command == "publish":
+        result = publish_git_delivery(
+            args.request_id,
+            workspace_root=args.workspace_root,
+            pr_title=args.title,
+            pr_body=args.body,
         )
     elif args.command in {"approve-apply", "reject-apply"}:
         result = decide_apply_execution(

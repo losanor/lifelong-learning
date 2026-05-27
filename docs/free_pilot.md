@@ -51,7 +51,10 @@ fluxo sem custo de modelo, defina temporariamente `USE_MOCK_MODEL=true` e rode
 4. Aprovar patches somente apos diff e validacoes.
 5. Rever semanalmente volume de runs, escaladas, custo de modelo e qualidade.
 
+Para backup, recuperacao, entrega Git supervisionada e tratamento de
+incidentes, siga `docs/operations_runbook.md`.
+
 ## Criterio para migrar ao Cloud pago
 
-Reavalie LangSmith Deployment quando houver necessidade comprovada de acesso
-remoto, execucao concorrente, disponibilidade continua ou retomada distribuida.
+Reavalie LangSmith Deployment quando os criterios mensuraveis descritos em
+`docs/operations_runbook.md` forem atingidos.

@@ -15,6 +15,7 @@ class SquadState(TypedDict, total=False):
     project_id: str
     initiative_id: str
     memory_namespace: str
+    operational_db_path: str
 
     context_mode: str
     context_policy: str

@@ -160,6 +160,11 @@ h2, h3, h4, p { margin: 0; }
 .timeline li { padding: 0 0 8px 4px; }
 .timeline small { display: block; color: var(--muted); }
 .diff-panel, .evidence { border-top: 1px solid var(--border); padding: 14px 17px; }
+.git-panel { border-top: 1px solid var(--border); padding: 14px 17px; background: #f8fafb; }
+.git-fields { display: grid; grid-template-columns: repeat(3, minmax(130px, 1fr)); gap: 10px; }
+.git-body { margin-top: 11px; }
+.git-body textarea { min-height: 66px; }
+.git-panel .muted { margin: 10px 0 0; }
 .diff-panel textarea {
   width: 100%; min-height: 145px; resize: vertical; background: #121c27; color: #e4edf5;
   border: 1px solid #263748; border-radius: 6px; padding: 10px; font: 12px/1.5 Consolas, monospace;
@@ -285,6 +290,22 @@ h2, h3, h4, p { margin: 0; }
 .agent-node span { font-size: 12px; color: var(--muted); display: block; margin-top: 3px; }
 .ece { width: fit-content; padding: 2px 7px; border-radius: 11px; background: var(--green-bg); color: var(--green); }
 .ece.c3 { background: var(--red-bg); color: var(--red); }
+.handoff-head {
+  border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-top: 4px; padding-top: 16px; margin-bottom: 11px;
+}
+.handoff-head h4 { font-size: 14px; margin: 0; }
+.handoff-list { display: grid; gap: 8px; max-width: 960px; }
+.handoff-card {
+  border: 1px solid var(--border); border-left: 3px solid var(--teal); border-radius: 0 6px 6px 0;
+  padding: 10px 12px; background: #fbfdfd;
+}
+.handoff-route { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; font-size: 13px; }
+.handoff-route .ece { margin-left: auto; font-size: 12px; }
+.handoff-artifact { display: block; color: var(--blue); font-size: 12px; font-weight: 600; margin: 7px 0 5px; }
+.handoff-card p { font-size: 13px; color: #344251; margin: 0 0 6px; white-space: pre-wrap; }
+.handoff-card small { color: var(--muted); }
+.legacy-note { padding: 12px; background: var(--panel-alt); border-radius: 6px; }
 .decision-list { display: grid; gap: 12px; max-width: 960px; }
 .decision-card { padding: 16px 18px; }
 .decision-card .question { font-weight: 600; margin: 12px 0 7px; }
@@ -299,6 +320,15 @@ h2, h3, h4, p { margin: 0; }
 .sync-result { margin: -8px 0 14px; }
 .cost-overview { display: grid; grid-template-columns: repeat(4, minmax(145px, 215px)); gap: 10px; margin-bottom: 14px; }
 .cost-grid { display: grid; grid-template-columns: repeat(2, minmax(300px, 1fr)); gap: 12px; max-width: 1000px; }
+.performance-grid { display: grid; grid-template-columns: 1.25fr 1fr 1fr; gap: 12px; align-items: start; }
+.indicator-row {
+  display: grid; grid-template-columns: 1.1fr .65fr .7fr .8fr .75fr;
+  align-items: center; gap: 8px; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.indicator-row:last-child { border-bottom: 0; }
+.indicator-row strong { font-size: 13px; overflow-wrap: anywhere; }
+.indicator-row span { color: var(--muted); }
+.indicator-row.quality { display: flex; flex-wrap: wrap; justify-content: space-between; }
 .chart-panel { padding: 15px; }
 .bar-row { margin-bottom: 12px; }
 .bar-label { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 5px; font-size: 13px; }
@@ -334,7 +364,7 @@ h2, h3, h4, p { margin: 0; }
   .inbox-grid { grid-template-columns: 265px 1fr; }
   .recent-panel { grid-column: 1 / -1; }
   .run-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-  .cost-grid, .ideas-grid { grid-template-columns: 1fr; }
+  .cost-grid, .ideas-grid, .performance-grid { grid-template-columns: 1fr; }
   .topology-layout { grid-template-columns: 1fr; }
   .topology-detail { min-height: 0; }
 }
@@ -360,6 +390,7 @@ h2, h3, h4, p { margin: 0; }
   .queue-panel, .recent-panel { margin-bottom: 12px; }
   .detail-column { margin-bottom: 12px; }
   .block + .block { border-left: 0; border-top: 1px solid var(--border); }
+  .git-fields { grid-template-columns: 1fr; }
   .run-list { display: flex; }
   .orchestration-tabs { width: 100%; }
   .map-legend { gap: 7px; }
@@ -373,6 +404,7 @@ h2, h3, h4, p { margin: 0; }
   .execution-header { align-items: start; flex-direction: column; }
   .flow-header .select-field { width: 100%; }
   .flow-canvas { padding: 12px; }
+  .handoff-route .ece { margin-left: 0; }
   .decision-actions { flex-direction: column; align-items: stretch; }
   .decision-actions .select-field { width: 100%; }
   .ideas-grid { display: block; }

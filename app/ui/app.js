@@ -7,6 +7,7 @@ const state = {
   board: null,
   decisions: null,
   costs: null,
+  performance: null,
   ideas: null,
   topology: null,
   selectedTopologyAgent: "cos",
@@ -35,13 +36,19 @@ function toast(message, error = false) {
 }
 
 function statusClass(status) {
-  if (["applied_validated", "approved_for_apply", "rolled_back", "resolved", "ended"].includes(status)) return "done";
+  if (["applied_validated", "git_committed", "pr_opened", "approved_for_apply", "rolled_back", "resolved", "ended"].includes(status)) return "done";
   if (["rejected", "not_actionable", "failed"].includes(status)) return "blocked";
   return "";
 }
 
 function money(value) {
   return `US$ ${Number(value || 0).toFixed(2)}`;
+}
+
+function observedMoney(value) {
+  const amount = Number(value || 0);
+  if (amount > 0 && amount < 0.01) return `US$ ${amount.toFixed(4)}`;
+  return money(amount);
 }
 
 function safeTraceUrl(value) {
@@ -119,6 +126,25 @@ const topologyModeLabels = {
 
 function topologyAgent(agentId) {
   return state.topology?.agents.find((agent) => agent.id === agentId);
+}
+
+const handoffAgentLabels = {
+  "Product Lead": "Produto",
+  "QA Planning": "QA Planejamento",
+  "Engineering Lead": "Engenharia",
+  "Implementation Operator": "Operacao de implementacao",
+  "Engineering Review": "Revisao de engenharia",
+  "QA Execution": "QA Execucao",
+  "CoS / Orchestrator": "CoS / Orquestracao",
+  "Human Decision Maker": "Decisao humana",
+  "UX/UI Lead": "UX/UI",
+  "Privacy & Compliance": "Privacidade",
+  "AppSec / Security": "Seguranca",
+  "Writing / Documentation": "Documentacao",
+};
+
+function handoffAgentLabel(value) {
+  return handoffAgentLabels[value] || topologyAgent(value)?.label || friendlyIdentifier(value);
 }
 
 function topologyNode(agent) {
@@ -267,6 +293,40 @@ function renderActions(request) {
   if (request.status === "applied_validated") add("Reverter aplicacao", "rollback", "danger");
 }
 
+function renderGitDelivery(request) {
+  const panel = byId("git-panel");
+  const delivery = request.git_delivery;
+  const eligible = ["applied_validated", "git_committed", "pr_opened"].includes(request.status);
+  panel.hidden = !eligible;
+  if (!eligible) return;
+  const suggestedBranch = `squad/${(request.initiative_id || request.request_id).replaceAll("_", "-").toLowerCase().slice(0, 48)}`;
+  if (!delivery && !byId("git-branch").value) byId("git-branch").value = suggestedBranch;
+  if (!delivery && !byId("git-message").value) byId("git-message").value = `Deliver ${request.initiative_id || request.request_id}`;
+  if (!byId("git-pr-title").value) byId("git-pr-title").value = byId("git-message").value;
+  if (delivery) {
+    byId("git-branch").value = delivery.branch_name;
+    byId("git-message").value = delivery.commit_message;
+  }
+  byId("git-status").textContent = request.status === "applied_validated" ? "Pronta para commit" : request.status === "git_committed" ? "Commit criado" : "PR draft aberto";
+  byId("git-summary").innerHTML = delivery
+    ? `Branch <strong>${escapeText(delivery.branch_name)}</strong> | Commit <strong>${escapeText((delivery.commit_sha || "").slice(0, 10))}</strong>${delivery.pr_url ? ` | <a class="trace-link" target="_blank" rel="noopener noreferrer" href="${escapeText(delivery.pr_url)}">Abrir PR</a>` : ""}`
+    : "A branch e o commit incluem somente os alvos aprovados nesta entrega.";
+  const actions = byId("git-actions");
+  actions.innerHTML = "";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "action primary";
+  if (request.status === "applied_validated") {
+    button.textContent = "Criar branch e commit";
+    button.addEventListener("click", () => submitAction("commit"));
+    actions.appendChild(button);
+  } else if (request.status === "git_committed") {
+    button.textContent = "Publicar e abrir PR draft";
+    button.addEventListener("click", () => submitAction("publish"));
+    actions.appendChild(button);
+  }
+}
+
 async function selectRequest(requestId) {
   state.selectedId = requestId;
   const request = await api(`/api/requests/${encodeURIComponent(requestId)}`);
@@ -295,6 +355,7 @@ async function selectRequest(requestId) {
   byId("memory-content").textContent = memory.decision_log || memory.compact_memory || "Sem memoria especifica registrada.";
   byId("patch-result").textContent = request.preparation?.preparation_status || "";
   renderActions(request);
+  renderGitDelivery(request);
   renderList();
 }
 
@@ -307,6 +368,14 @@ async function submitAction(action) {
     if (byId("validate-tests").checked) payload.validations.push("unit_tests");
   }
   if (action === "rollback") payload.notes = "Rollback requested from console.";
+  if (action === "commit") {
+    payload.branch_name = byId("git-branch").value.trim();
+    payload.commit_message = byId("git-message").value.trim();
+  }
+  if (action === "publish") {
+    payload.pr_title = byId("git-pr-title").value.trim();
+    payload.pr_body = byId("git-pr-body").value.trim();
+  }
   try {
     await api(`/api/requests/${encodeURIComponent(state.selectedId)}/${action}`, {
       method: "POST", body: JSON.stringify(payload),
@@ -404,6 +473,7 @@ async function renderFlow(runId = "") {
     byId("flow-meta").innerHTML = `<p class="muted">Sem runs executadas.</p>`;
     byId("flow-trace").innerHTML = "";
     byId("agent-flow").innerHTML = "";
+    byId("handoff-list").innerHTML = "";
     return;
   }
   byId("flow-goal").textContent = flow.run.user_goal || "Atividade sem descricao";
@@ -422,6 +492,16 @@ async function renderFlow(runId = "") {
   byId("agent-flow").innerHTML = flow.agents.map((agent) =>
     `<article class="agent-node"><strong>${escapeText(topologyAgent(agent.agent_name)?.label || friendlyIdentifier(agent.agent_name))}</strong><span class="ece ${agent.ece === "C3" ? "c3" : ""}">${escapeText(agent.ece)}</span><span>${escapeText(agent.artifact_type || "artefato")}</span><span>${agent.schema_valid ? "Schema valido" : "Revisar schema"}</span></article>`
   ).join("") || `<p class="muted">Sem interacoes registradas.</p>`;
+  const recorded = flow.link_source === "recorded_handoffs";
+  byId("handoff-source").textContent = recorded ? "Evento real da run" : "Atividade anterior ao registro";
+  byId("handoff-list").innerHTML = recorded
+    ? flow.handoffs.map((handoff) => `<article class="handoff-card">
+      <div class="handoff-route"><strong>${escapeText(handoffAgentLabel(handoff.source_agent))}</strong><span aria-hidden="true">&rarr;</span><strong>${escapeText(handoffAgentLabel(handoff.target_agent))}</strong><span class="ece ${handoff.ece.includes("C3") ? "c3" : ""}">${escapeText(handoff.ece)}</span></div>
+      <span class="handoff-artifact">${escapeText(handoff.artifact)}</span>
+      <p>${escapeText(handoff.summary)}</p>
+      <small>${escapeText(handoff.next_step)}</small>
+    </article>`).join("")
+    : `<p class="muted legacy-note">Esta execucao e anterior ao registro estruturado de passagens; os agentes acima indicam apenas os outputs produzidos.</p>`;
 }
 
 function renderDecisions(snapshot) {
@@ -475,7 +555,7 @@ function renderBars(containerId, items, labelKey) {
 }
 
 function renderCosts(costs) {
-  const observedLabel = costs.real_cost_available ? money(costs.observed_cost_usd) : "Ainda nao sincronizado";
+  const observedLabel = costs.real_cost_available ? observedMoney(costs.observed_cost_usd) : "Ainda nao sincronizado";
   byId("cost-mode").textContent = costs.real_cost_available ? "Observado + estimativa" : "Estimativa";
   byId("cost-overview").innerHTML = [
     ["Runs contabilizadas", costs.total_runs],
@@ -488,6 +568,21 @@ function renderCosts(costs) {
   ].map(([label, value]) => `<div class="metric"><span>${label}</span><strong>${escapeText(value)}</strong></div>`).join("");
   renderBars("cost-by-tier", costs.by_tier, "tier");
   renderBars("cost-by-project", costs.by_project, "project_id");
+}
+
+function renderPerformance(snapshot) {
+  byId("performance-daily").innerHTML = snapshot.daily_runs.map((day) =>
+    `<div class="indicator-row"><strong>${escapeText(day.day)}</strong><span>${day.run_count} runs</span><span>${Math.round(day.average_duration_ms)} ms</span><span>${observedMoney(day.observed_cost_usd)}</span><span>${day.escalation_count} escaladas</span></div>`
+  ).join("") || `<p class="muted">Sem operacao real registrada.</p>`;
+  byId("performance-evals").innerHTML = snapshot.evaluations.map((evaluation) => {
+    const reached = Number(evaluation.average_score) >= snapshot.quality_target;
+    return `<div class="indicator-row quality"><strong>${escapeText(evaluation.evaluation_id)}</strong><span class="pill ${reached ? "done" : "warning"}">${escapeText(evaluation.average_score)} / 10</span><span>${evaluation.passed_count} de ${evaluation.scenario_count} aprovados</span></div>`;
+  }).join("") || `<p class="muted">Execute uma avaliacao para formar historico.</p>`;
+  byId("performance-baselines").innerHTML = snapshot.baselines.map((baseline) => {
+    const score = baseline.human_average_score ?? baseline.automatic_average_score;
+    const reached = score != null && Number(score) >= snapshot.quality_target;
+    return `<div class="indicator-row quality"><strong>${escapeText(baseline.baseline_id)}</strong><span class="pill ${reached ? "done" : "warning"}">${escapeText(score ?? "-")} / 10</span><span>Humano: ${escapeText(baseline.human_average_score ?? "-")}</span></div>`;
+  }).join("") || `<p class="muted">Nenhuma baseline real revisada.</p>`;
 }
 
 async function syncLangSmith() {
@@ -568,15 +663,16 @@ function switchView(view) {
 
 async function loadAll() {
   try {
-    const [dashboard, requestSnapshot, board, decisions, costs, ideas, topology] = await Promise.all([
+    const [dashboard, requestSnapshot, board, decisions, costs, performance, ideas, topology] = await Promise.all([
       api("/api/dashboard"), api("/api/requests"), api("/api/board"),
-      api("/api/decisions"), api("/api/costs"), api("/api/ideas"), api("/api/topology"),
+      api("/api/decisions"), api("/api/costs"), api("/api/performance"), api("/api/ideas"), api("/api/topology"),
     ]);
     state.dashboard = dashboard;
     state.requests = requestSnapshot.requests;
     state.board = board;
     state.decisions = decisions;
     state.costs = costs;
+    state.performance = performance;
     state.ideas = ideas;
     state.topology = topology;
     byId("system-status").textContent = "Runtime local conectado";
@@ -587,6 +683,7 @@ async function loadAll() {
     renderBoard(board);
     renderDecisions(decisions);
     renderCosts(costs);
+    renderPerformance(performance);
     renderIdeas(ideas);
     renderTopology();
     if (state.activeView === "flow" && state.orchestrationTab === "executions") await renderFlow(byId("flow-run-select").value);

@@ -99,6 +99,7 @@ def _initial_state(
     run_id: str,
     workspace_root: str | Path,
     initiative_id: str | None = None,
+    db_path: str | Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
     scope = resolve_work_scope(workspace_root, initiative_id=initiative_id or f"eval-{scenario.scenario_id}")
     return {
@@ -107,6 +108,7 @@ def _initial_state(
         "workspace_root": str(workspace_root),
         **scope.as_state(),
         "work_scope": scope.as_state(),
+        "operational_db_path": str(db_path),
         "manual_validation_result": "Validacao mock concluida para eval deterministica.",
         "retry_count": 0,
         "max_retries": 2,
@@ -198,7 +200,7 @@ def run_evaluation(
         preflight = decide_intake(scenario.user_goal)
         started_at = perf_counter()
         result = graph.invoke(
-            _initial_state(scenario, run_id, workspace_root, scope.initiative_id),
+            _initial_state(scenario, run_id, workspace_root, scope.initiative_id, db_path),
             config=build_run_config(
                 run_id=run_id,
                 active_flow=scenario.expected_flow,

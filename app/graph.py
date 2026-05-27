@@ -276,6 +276,7 @@ def discovery_node(state: SquadState):
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
+        db_path=state.get("operational_db_path") or None,
         from_agent="Discovery",
         to_agent="Product Lead",
         artifact="Discovery / Market Research",
@@ -324,6 +325,7 @@ def writing_node(state: SquadState):
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
+        db_path=state.get("operational_db_path") or None,
         from_agent="Writing / Documentation",
         to_agent="CoS / Orchestrator",
         artifact="Writing Artifact",
@@ -376,6 +378,7 @@ def ux_ui_node(state: SquadState):
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
+        db_path=state.get("operational_db_path") or None,
         from_agent="UX/UI Lead",
         to_agent=handoff_to,
         artifact="UX/UI Gate",
@@ -410,6 +413,7 @@ def privacy_node(state: SquadState):
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
+        db_path=state.get("operational_db_path") or None,
         from_agent="Privacy & Compliance",
         to_agent="AppSec / Implementation Operator",
         artifact="Privacy Gate",
@@ -446,6 +450,7 @@ def appsec_node(state: SquadState):
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
+        db_path=state.get("operational_db_path") or None,
         from_agent="AppSec / Security",
         to_agent="Implementation Operator",
         artifact="AppSec Gate",
@@ -488,6 +493,7 @@ def product_node(state: SquadState):
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
+        db_path=state.get("operational_db_path") or None,
         from_agent="Product Lead",
         to_agent="QA Planning",
         artifact="Product Brief",
@@ -539,6 +545,7 @@ def qa_planning_node(state: SquadState):
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
+        db_path=state.get("operational_db_path") or None,
         from_agent="QA Planning",
         to_agent="Engineering Lead",
         artifact="QA Planning",
@@ -594,6 +601,7 @@ def engineering_node(state: SquadState):
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
+        db_path=state.get("operational_db_path") or None,
         from_agent="Engineering Lead",
         to_agent="Implementation Operator",
         artifact="Engineering Specification",
@@ -649,6 +657,7 @@ def operator_node(state: SquadState):
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
+        db_path=state.get("operational_db_path") or None,
         from_agent="Implementation Operator",
         to_agent="Engineering Review",
         artifact="Implementation Package",
@@ -710,6 +719,7 @@ def engineering_review_node(state: SquadState):
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
+        db_path=state.get("operational_db_path") or None,
         from_agent="Engineering Review",
         to_agent="QA Execution",
         artifact="Engineering Review",
@@ -771,6 +781,7 @@ def qa_execution_node(state: SquadState):
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
+        db_path=state.get("operational_db_path") or None,
         from_agent="QA Execution",
         to_agent="CoS / Orchestrator",
         artifact="QA Execution Report",
@@ -1026,6 +1037,7 @@ def cos_node(state: SquadState):
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
+        db_path=state.get("operational_db_path") or None,
         from_agent="CoS / Orchestrator",
         to_agent=handoff_to,
         artifact="CoS / Orchestrator Report",

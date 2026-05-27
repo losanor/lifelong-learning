@@ -111,6 +111,7 @@ def _execute_manual_run(
                 "project_id": preview["project_id"],
                 "initiative_id": preview["initiative_id"],
                 "memory_namespace": preview["memory_namespace"],
+                "operational_db_path": str(db_path),
                 "work_scope": {
                     "project_id": preview["project_id"],
                     "initiative_id": preview["initiative_id"],

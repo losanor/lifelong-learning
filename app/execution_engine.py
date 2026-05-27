@@ -15,6 +15,7 @@ from app.operational_store import (
     record_apply_decision,
     record_execution_decision,
     record_execution_application,
+    record_git_delivery,
     record_execution_preparation,
     record_execution_request,
     record_workflow_checkpoint,
@@ -29,6 +30,8 @@ AWAITING_PATCH = "awaiting_patch"
 AWAITING_APPLY_APPROVAL = "awaiting_apply_approval"
 APPROVED_FOR_APPLY = "approved_for_apply"
 APPLIED_VALIDATED = "applied_validated"
+GIT_COMMITTED = "git_committed"
+PR_OPENED = "pr_opened"
 ROLLED_BACK = "rolled_back"
 MAX_PATCH_BYTES = 1_000_000
 VALIDATION_PRESETS = {
@@ -497,7 +500,7 @@ def apply_execution_request(
         {
             "request_id": request_id,
             "request_status": APPLIED_VALIDATED,
-            "status_reason": "Patch applied and validation evidence recorded; Git delivery remains manual.",
+            "status_reason": "Patch applied and validation evidence recorded; Git delivery awaits human action.",
             "application_status": "applied_validated",
             "workspace_root": str(root),
             "patch_sha256": patch_digest,
@@ -508,6 +511,155 @@ def apply_execution_request(
         stage="application_validated",
         db_path=db_path,
     )
+
+
+def _validated_branch_name(value: str, request_id: str) -> str:
+    branch_name = value.strip() or f"squad/delivery-{request_id.removeprefix('exec_')[:24]}"
+    if (
+        len(branch_name) > 120
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch_name)
+        or ".." in branch_name
+        or "//" in branch_name
+        or branch_name.endswith(("/", "."))
+    ):
+        raise ValueError("Branch name is invalid for supervised Git delivery.")
+    return branch_name
+
+
+def commit_git_delivery(
+    request_id: str,
+    *,
+    workspace_root: str | Path = ".",
+    branch_name: str = "",
+    commit_message: str = "",
+    remote_name: str = "origin",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    snapshot = execution_request_snapshot(request_id=request_id, db_path=db_path)
+    if not snapshot["requests"]:
+        raise ValueError("Execution request not found.")
+    request = snapshot["requests"][0]
+    if request["status"] != APPLIED_VALIDATED:
+        raise ValueError("Only an applied and validated delivery can be committed.")
+    application = request.get("application") or {}
+    root = Path(workspace_root).resolve()
+    if str(root) != application.get("workspace_root"):
+        raise ValueError("Workspace root differs from the applied execution workspace.")
+    branch = _validated_branch_name(branch_name, request_id)
+    message = commit_message.strip()[:240] or f"Deliver {request.get('initiative_id') or request_id}"
+    base_result = _run_command(["git", "branch", "--show-current"], workspace_root=root)
+    if not base_result["passed"]:
+        raise ValueError("Unable to identify the current Git branch.")
+    base_branch = base_result["output"].strip()
+    changed_result = _run_command(
+        ["git", "diff", "--name-only", "--", *request["target_refs"]],
+        workspace_root=root,
+    )
+    if not changed_result["passed"] or not changed_result["output"].strip():
+        raise ValueError("No approved target changes are available to commit.")
+    switch = _run_command(["git", "switch", "-c", branch], workspace_root=root)
+    if not switch["passed"]:
+        raise ValueError(f"Unable to create delivery branch: {switch['output']}")
+    add = _run_command(["git", "add", "--", *request["target_refs"]], workspace_root=root)
+    if not add["passed"]:
+        raise ValueError(f"Unable to stage approved targets: {add['output']}")
+    commit = _run_command(["git", "commit", "-m", message, "--", *request["target_refs"]], workspace_root=root)
+    if not commit["passed"]:
+        raise ValueError(f"Unable to create delivery commit: {commit['output']}")
+    sha = _run_command(["git", "rev-parse", "HEAD"], workspace_root=root)
+    if not sha["passed"]:
+        raise ValueError("Commit was created but its SHA could not be recorded.")
+    recorded = record_git_delivery(
+        {
+            "request_id": request_id,
+            "request_status": GIT_COMMITTED,
+            "status_reason": "Branch and commit created; publication and draft PR require human confirmation.",
+            "delivery_status": GIT_COMMITTED,
+            "workspace_root": str(root),
+            "branch_name": branch,
+            "base_branch": base_branch,
+            "commit_sha": sha["output"].strip(),
+            "commit_message": message,
+            "remote_name": remote_name.strip()[:80] or "origin",
+            "evidence": {"changed_targets": changed_result, "switch": switch, "add": add, "commit": commit},
+        },
+        db_path=db_path,
+    )
+    record_workflow_checkpoint(
+        thread_id=recorded["run_id"],
+        run_id=recorded["run_id"],
+        stage="git_commit_created",
+        status=recorded["status"],
+        payload={"request_id": request_id, "branch_name": branch, "commit_sha": sha["output"].strip()},
+        db_path=db_path,
+    )
+    return recorded
+
+
+def publish_git_delivery(
+    request_id: str,
+    *,
+    workspace_root: str | Path = ".",
+    pr_title: str = "",
+    pr_body: str = "",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    snapshot = execution_request_snapshot(request_id=request_id, db_path=db_path)
+    if not snapshot["requests"]:
+        raise ValueError("Execution request not found.")
+    request = snapshot["requests"][0]
+    delivery = request.get("git_delivery")
+    if request["status"] != GIT_COMMITTED or not delivery:
+        raise ValueError("Create the supervised commit before publishing a draft PR.")
+    root = Path(workspace_root).resolve()
+    if str(root) != delivery["workspace_root"]:
+        raise ValueError("Workspace root differs from the committed delivery workspace.")
+    title = pr_title.strip()[:240] or delivery["commit_message"]
+    body = pr_body.strip()[:8000] or "Entrega gerada pela squad e aguardando revisao humana."
+    push = _run_command(
+        ["git", "push", "-u", delivery["remote_name"], delivery["branch_name"]],
+        workspace_root=root,
+        timeout=180,
+    )
+    if not push["passed"]:
+        raise ValueError(f"Unable to publish delivery branch: {push['output']}")
+    pr = _run_command(
+        [
+            "gh", "pr", "create", "--draft", "--base", delivery["base_branch"],
+            "--head", delivery["branch_name"], "--title", title, "--body", body,
+        ],
+        workspace_root=root,
+        timeout=180,
+    )
+    if not pr["passed"]:
+        raise ValueError(f"Branch published, but draft PR creation failed: {pr['output']}")
+    match = re.search(r"https?://\S+", pr["output"])
+    recorded = record_git_delivery(
+        {
+            "request_id": request_id,
+            "request_status": PR_OPENED,
+            "status_reason": "Draft PR published; merge remains a human decision.",
+            "delivery_status": PR_OPENED,
+            "workspace_root": str(root),
+            "branch_name": delivery["branch_name"],
+            "base_branch": delivery["base_branch"],
+            "commit_sha": delivery["commit_sha"],
+            "commit_message": delivery["commit_message"],
+            "remote_name": delivery["remote_name"],
+            "pr_url": match.group(0) if match else "",
+            "evidence": {**delivery.get("evidence", {}), "push": push, "draft_pr": pr},
+        },
+        db_path=db_path,
+    )
+    record_workflow_checkpoint(
+        thread_id=recorded["run_id"],
+        run_id=recorded["run_id"],
+        stage="draft_pr_published",
+        status=recorded["status"],
+        payload={"request_id": request_id, "pr_url": recorded["git_delivery"]["pr_url"]},
+        db_path=db_path,
+    )
+    return recorded
 
 
 def rollback_execution_request(

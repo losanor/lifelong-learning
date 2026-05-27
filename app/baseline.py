@@ -119,7 +119,13 @@ BASELINE_CASES = (
 )
 
 
-def _state(case: BaselineCase, run_id: str, workspace_root: str | Path, baseline_id: str) -> dict:
+def _state(
+    case: BaselineCase,
+    run_id: str,
+    workspace_root: str | Path,
+    baseline_id: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict:
     scope = resolve_work_scope(workspace_root, initiative_id=baseline_id)
     return {
         "run_id": run_id,
@@ -127,6 +133,7 @@ def _state(case: BaselineCase, run_id: str, workspace_root: str | Path, baseline
         "workspace_root": str(workspace_root),
         **scope.as_state(),
         "work_scope": scope.as_state(),
+        "operational_db_path": str(db_path),
         "manual_validation_result": "Baseline real: QA deve declarar limitacoes se nao houver build executado.",
         "retry_count": 0,
         "max_retries": 2,
@@ -174,7 +181,7 @@ def run_baseline(
         started_at = perf_counter()
         try:
             result = graph.invoke(
-                _state(case, run_id, workspace_root, baseline_id),
+                _state(case, run_id, workspace_root, baseline_id, db_path),
                 config=build_run_config(
                     run_id=run_id,
                     active_flow=intake.active_flow,

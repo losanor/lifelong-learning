@@ -14,9 +14,11 @@ from urllib.parse import parse_qs, unquote, urlparse
 import app.config  # Load local runtime settings before exposing dashboard status.
 from app.execution_engine import (
     apply_execution_request,
+    commit_git_delivery,
     decide_apply_execution,
     decide_execution_request,
     prepare_execution_request,
+    publish_git_delivery,
     rollback_execution_request,
 )
 from app.observability import fetch_langsmith_trace
@@ -29,6 +31,7 @@ from app.operational_store import (
     execution_request_snapshot,
     human_decision_snapshot,
     metrics_snapshot,
+    performance_history_snapshot,
     parking_lot_snapshot,
     pending_work_snapshot,
     promote_parking_lot_item,
@@ -118,6 +121,9 @@ class OperationsHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/costs":
             self._json(cost_snapshot(self.db_path))
+            return
+        if path == "/api/performance":
+            self._json(performance_history_snapshot(self.db_path))
             return
         if path == "/api/decisions":
             self._json(human_decision_snapshot(self.db_path))
@@ -239,6 +245,23 @@ class OperationsHandler(SimpleHTTPRequestHandler):
                     request_id,
                     workspace_root=str(payload.get("workspace_root", ".")),
                     reason=notes or "Rollback requested from operations console.",
+                    db_path=self.db_path,
+                )
+            elif action == "commit":
+                result = commit_git_delivery(
+                    request_id,
+                    workspace_root=str(payload.get("workspace_root", ".")),
+                    branch_name=str(payload.get("branch_name", "")),
+                    commit_message=str(payload.get("commit_message", "")),
+                    remote_name=str(payload.get("remote_name", "origin")),
+                    db_path=self.db_path,
+                )
+            elif action == "publish":
+                result = publish_git_delivery(
+                    request_id,
+                    workspace_root=str(payload.get("workspace_root", ".")),
+                    pr_title=str(payload.get("pr_title", "")),
+                    pr_body=str(payload.get("pr_body", "")),
                     db_path=self.db_path,
                 )
             else:

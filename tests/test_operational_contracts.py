@@ -26,6 +26,7 @@ from app.route_events import append_route_event, read_route_events
 from app.scoped_storage import scoped_path
 from app.execution_engine import (
     apply_execution_request,
+    commit_git_delivery,
     create_execution_request,
     decide_apply_execution,
     decide_execution_request,
@@ -41,10 +42,13 @@ from app.operational_store import (
     execution_request_snapshot,
     human_decision_snapshot,
     metrics_snapshot,
+    performance_history_snapshot,
     parking_lot_snapshot,
     pending_work_snapshot,
     promote_parking_lot_item,
     record_baseline_result,
+    record_eval_result,
+    record_handoff_event,
     record_run,
     record_run_started,
     recent_runs_snapshot,
@@ -599,7 +603,7 @@ class OperationalContractsTest(unittest.TestCase):
                     ],
                 )
                 pending = pending_work_snapshot(db_path)
-                self.assertEqual(pending["pending"][0]["next_action"], "Revisar entrega; commit/push manual ou rollback.")
+                self.assertEqual(pending["pending"][0]["next_action"], "Criar branch e commit supervisionado ou reverter aplicacao.")
 
                 rolled_back = rollback_execution_request(
                     request["request_id"],
@@ -611,6 +615,68 @@ class OperationalContractsTest(unittest.TestCase):
                 self.assertFalse(rolled_back["effects_enabled"])
                 self.assertEqual(target.read_text(encoding="utf-8"), "# Before\n\nContext.\n")
                 self.assertEqual(pending_work_snapshot(db_path)["pending_count"], 0)
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_validated_delivery_can_create_supervised_branch_and_commit(self):
+        db_path = Path("data") / "test_git_delivery.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        Path("data").mkdir(exist_ok=True)
+        try:
+            with tempfile.TemporaryDirectory(dir="data") as temp_dir:
+                workspace = Path(temp_dir)
+                target = workspace / "README.md"
+                target.write_text("# Before\n", encoding="utf-8")
+                subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+                subprocess.run(["git", "config", "user.name", "tests"], cwd=workspace, check=True)
+                subprocess.run(["git", "config", "user.email", "tests@example.test"], cwd=workspace, check=True)
+                subprocess.run(["git", "add", "README.md"], cwd=workspace, check=True)
+                subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=workspace, check=True)
+                result = {
+                    "active_flow": "docs",
+                    "execution_policy": {"approval_required_actions": ["write_files"]},
+                    "route_status": "ended",
+                    "operational_packet": {
+                        "execution_ready": True,
+                        "target_refs": ["README.md"],
+                        "recommended_actions": ["Atualizar README."],
+                        "verification_steps": ["Validar diff."],
+                        "git_actions": ["commit"],
+                    },
+                    "structured_outputs": {},
+                    "orchestrator_checks": {},
+                }
+                record_run(result, run_id="run_git", user_goal="Editar README.", db_path=db_path)
+                request = create_execution_request(result, run_id="run_git", db_path=db_path)
+                decide_execution_request(request["request_id"], decision="approved", decided_by="owner", db_path=db_path)
+                prepare_execution_request(
+                    request["request_id"],
+                    patch_text="--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# Before\n+# Delivered\n",
+                    workspace_root=workspace,
+                    db_path=db_path,
+                )
+                decide_apply_execution(request["request_id"], decision="approved", decided_by="owner", db_path=db_path)
+                apply_execution_request(request["request_id"], workspace_root=workspace, db_path=db_path)
+
+                delivered = commit_git_delivery(
+                    request["request_id"],
+                    workspace_root=workspace,
+                    branch_name="squad/test-delivery",
+                    commit_message="Deliver README",
+                    db_path=db_path,
+                )
+
+                self.assertEqual(delivered["status"], "git_committed")
+                self.assertEqual(delivered["git_delivery"]["branch_name"], "squad/test-delivery")
+                self.assertTrue(delivered["git_delivery"]["commit_sha"])
+                self.assertEqual(
+                    subprocess.run(["git", "branch", "--show-current"], cwd=workspace, check=True, text=True, capture_output=True).stdout.strip(),
+                    "squad/test-delivery",
+                )
+                self.assertEqual(pending_work_snapshot(db_path)["pending"][0]["next_action"], "Publicar branch e abrir PR draft apos revisao humana.")
+                self.assertIn("git_commit_created", [item["stage"] for item in workflow_checkpoint_snapshot(thread_id="run_git", db_path=db_path)["checkpoints"]])
         finally:
             if db_path.exists():
                 db_path.unlink()
@@ -946,6 +1012,24 @@ class OperationalContractsTest(unittest.TestCase):
                 trace_id="trace_decision",
                 db_path=db_path,
             )
+            record_handoff_event(
+                run_id="run_decision",
+                source_agent="Product Lead",
+                target_agent="CoS / Orchestrator",
+                artifact="Product Decision",
+                summary="Preco depende de decisao humana.",
+                ece="C2",
+                db_path=db_path,
+            )
+            record_eval_result(
+                evaluation_id="eval_contract",
+                scenario_id="decision",
+                run_id="run_decision",
+                passed=True,
+                score=9.0,
+                findings=[],
+                db_path=db_path,
+            )
             validation_result = {
                 **result,
                 "work_scope": {
@@ -976,11 +1060,15 @@ class OperationalContractsTest(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(board_snapshot(db_path)["columns"]["human_decision"][0]["run_id"], "run_decision")
-            self.assertEqual([agent["agent_name"] for agent in run_flow_snapshot(run_id="run_decision", db_path=db_path)["agents"]], ["product", "cos"])
+            flow = run_flow_snapshot(run_id="run_decision", db_path=db_path)
+            self.assertEqual([agent["agent_name"] for agent in flow["agents"]], ["product", "cos"])
+            self.assertEqual(flow["link_source"], "recorded_handoffs")
+            self.assertEqual(flow["handoffs"][0]["target_agent"], "CoS / Orchestrator")
             costs = cost_snapshot(db_path)
             self.assertEqual(costs["estimated_budget_usd"], 0.30)
             self.assertEqual(costs["validation_estimated_budget_usd"], 0.15)
             self.assertEqual(metrics_snapshot(db_path, include_validation=False)["run_count"], 1)
+            self.assertEqual(performance_history_snapshot(db_path)["evaluations"][0]["average_score"], 9.0)
 
             def fake_trace_loader(trace_id):
                 return {
@@ -998,7 +1086,7 @@ class OperationalContractsTest(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             base_url = f"http://127.0.0.1:{server.server_port}"
-            for route in ("board", "costs", "decisions", "flow?run_id=run_decision", "topology"):
+            for route in ("board", "costs", "performance", "decisions", "flow?run_id=run_decision", "topology"):
                 with urllib.request.urlopen(f"{base_url}/api/{route}") as response:
                     self.assertEqual(response.status, 200)
             with urllib.request.urlopen(f"{base_url}/api/topology") as response:
