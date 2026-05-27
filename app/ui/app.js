@@ -46,6 +46,67 @@ function safeTraceUrl(value) {
   return url.startsWith("https://") ? url : "";
 }
 
+const flowLabels = {
+  delivery_core: "Entrega de funcionalidade",
+  delivery_with_discovery: "Descoberta e entrega",
+  bugfix: "Correcao de problema",
+  docs: "Documentacao",
+  review: "Revisao tecnica",
+  decision_only: "Decisao de produto",
+  research_only: "Pesquisa e descoberta",
+};
+
+const runStatusLabels = {
+  queued: "Na fila",
+  running: "Em andamento",
+  ended: "Concluida",
+  human_escalation: "Aguardando decisao humana",
+  return_requested: "Revisao solicitada",
+  failed: "Falhou",
+};
+
+const tierLabels = {
+  quick: "Rapida",
+  standard: "Padrao",
+  controlled: "Controlada",
+  full: "Completa",
+  legacy: "Historica",
+};
+
+function friendlyIdentifier(value) {
+  return String(value || "").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function flowLabel(value) {
+  return flowLabels[value] || friendlyIdentifier(value) || "Atividade";
+}
+
+function runStatusLabel(value) {
+  return runStatusLabels[value] || friendlyIdentifier(value) || "Sem status";
+}
+
+function tierLabel(value) {
+  return tierLabels[value || "legacy"] || friendlyIdentifier(value) || "Historica";
+}
+
+function formatActivityDate(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function compactGoal(value) {
+  const goal = String(value || "Atividade sem descricao").trim();
+  return goal.length > 62 ? `${goal.slice(0, 59)}...` : goal;
+}
+
+function activityOptionLabel(run) {
+  const parts = [compactGoal(run.user_goal), flowLabel(run.active_flow), formatActivityDate(run.created_at)];
+  if (run.project_id) parts.splice(1, 0, `Projeto: ${run.project_id}`);
+  return parts.filter(Boolean).join(" | ");
+}
+
 function renderMetrics(metrics) {
   const values = [
     ["Runs", metrics.run_count],
@@ -254,19 +315,25 @@ function renderBoard(board) {
 async function renderFlow(runId = "") {
   const runs = state.dashboard.recent_runs.runs.filter((run) => run.agent_count > 0);
   const select = byId("flow-run-select");
-  select.innerHTML = runs.map((run) => `<option value="${escapeText(run.run_id)}">${escapeText(run.project_id)} / ${escapeText(run.initiative_id)} - ${escapeText(run.active_flow)}</option>`).join("");
+  select.innerHTML = runs.map((run) => `<option value="${escapeText(run.run_id)}">${escapeText(activityOptionLabel(run))}</option>`).join("");
   const selectedId = runId || select.value || runs[0]?.run_id || "";
   if (selectedId) select.value = selectedId;
   const flow = await api(`/api/flow${selectedId ? `?run_id=${encodeURIComponent(selectedId)}` : ""}`);
   if (!flow.run) {
+    byId("flow-goal").textContent = "";
     byId("flow-meta").innerHTML = `<p class="muted">Sem runs executadas.</p>`;
     byId("flow-trace").innerHTML = "";
     byId("agent-flow").innerHTML = "";
     return;
   }
+  byId("flow-goal").textContent = flow.run.user_goal || "Atividade sem descricao";
   byId("flow-meta").innerHTML = [
-    flow.run.project_id || "sem projeto", flow.run.initiative_id || "sem iniciativa", flow.run.active_flow, flow.run.execution_tier || "legacy", flow.run.cos_decision || flow.run.status,
-  ].map((value) => `<span class="pill neutral">${escapeText(value)}</span>`).join("");
+    flow.run.project_id ? `Projeto: ${flow.run.project_id}` : "",
+    flow.run.initiative_id ? `Iniciativa: ${flow.run.initiative_id}` : "",
+    `Tipo: ${flowLabel(flow.run.active_flow)}`,
+    `Modo: ${tierLabel(flow.run.execution_tier)}`,
+    `Situacao: ${runStatusLabel(flow.run.status)}`,
+  ].filter(Boolean).map((value) => `<span class="pill neutral">${escapeText(value)}</span>`).join("");
   const traceUrl = safeTraceUrl(flow.run.trace_url);
   const traceCost = flow.run.observed_cost_usd == null ? "Custo nao sincronizado" : `Custo observado ${money(flow.run.observed_cost_usd)}`;
   byId("flow-trace").innerHTML = flow.run.trace_id

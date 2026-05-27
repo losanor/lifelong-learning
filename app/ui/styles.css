@@ -177,8 +177,9 @@ h2, h3, h4, p { margin: 0; }
 .work-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 9px; margin-bottom: 8px; }
 .work-card strong { font-size: 13px; display: block; overflow-wrap: anywhere; }
 .work-card span { font-size: 12px; color: var(--muted); display: block; margin-top: 3px; }
-.flow-header .select-field { width: min(390px, 45vw); }
+.flow-header .select-field { width: min(620px, 55vw); }
 .flow-canvas { padding: 16px; min-height: 330px; }
+.flow-goal { font-size: 18px; margin: 0 0 14px; max-width: 900px; }
 .flow-meta { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 22px; }
 .trace-summary {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: #344251;

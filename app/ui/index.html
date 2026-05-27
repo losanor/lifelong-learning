@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Squad Operations</title>
-  <link rel="stylesheet" href="/styles.css?v=4">
+  <link rel="stylesheet" href="/styles.css?v=5">
 </head>
 <body>
   <header class="topbar">
@@ -135,9 +135,10 @@
       <section class="app-view" id="view-flow" aria-labelledby="flow-title">
         <header class="page-header flow-header">
           <div><h2 id="flow-title">Fluxo da run</h2><p>Agentes executados e passagens de contexto</p></div>
-          <label class="select-field"><span>Run</span><select id="flow-run-select"></select></label>
+          <label class="select-field"><span>Atividade executada</span><select id="flow-run-select"></select></label>
         </header>
         <section class="panel flow-canvas">
+          <h3 class="flow-goal" id="flow-goal"></h3>
           <div class="flow-meta" id="flow-meta"></div>
           <div class="trace-summary" id="flow-trace"></div>
           <div class="agent-flow" id="agent-flow"></div>
@@ -190,6 +191,6 @@
     </main>
   </div>
   <div class="toast" id="toast" role="status" hidden></div>
-  <script defer src="/app.js?v=4"></script>
+  <script defer src="/app.js?v=5"></script>
 </body>
 </html>
