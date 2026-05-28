@@ -44,7 +44,7 @@ from app.operational_store import (
     workflow_checkpoint_snapshot,
 )
 from app.scoped_storage import read_scoped_or_seed
-from app.run_service import enqueue_manual_run, preview_manual_run
+from app.run_service import available_reference_documents, enqueue_manual_run, preview_manual_run
 from app.squad_topology import squad_topology_snapshot
 
 
@@ -176,6 +176,11 @@ class OperationsHandler(SimpleHTTPRequestHandler):
                 return
             self._preview_manual_run()
             return
+        if path == "/api/intake/documents":
+            if self._reject_cross_origin_mutation():
+                return
+            self._list_reference_documents()
+            return
         if path == "/api/runs":
             if self._reject_cross_origin_mutation():
                 return
@@ -273,7 +278,13 @@ class OperationsHandler(SimpleHTTPRequestHandler):
 
     def _preview_manual_run(self) -> None:
         try:
-            self._json(preview_manual_run(self._read_json()))
+            self._json(preview_manual_run(self._read_json(), db_path=self.db_path))
+        except (ValueError, json.JSONDecodeError) as error:
+            self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+
+    def _list_reference_documents(self) -> None:
+        try:
+            self._json(available_reference_documents(self._read_json()))
         except (ValueError, json.JSONDecodeError) as error:
             self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
 

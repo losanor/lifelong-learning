@@ -4,6 +4,7 @@ const state = {
   selectedId: null,
   filter: "pending",
   intakePreview: null,
+  documentOptions: [],
   board: null,
   decisions: null,
   costs: null,
@@ -394,6 +395,7 @@ function runPayload() {
     project_id: byId("run-project").value.trim(),
     initiative_id: byId("run-initiative").value.trim(),
     workspace_root: byId("run-workspace").value.trim() || ".",
+    reference_document_ref: byId("run-document").value,
   };
 }
 
@@ -412,9 +414,42 @@ function renderPreview(preview) {
   byId("preview-budget").textContent = money(policy.max_cost_usd);
   byId("preview-agents").textContent = String(policy.planned_agent_count);
   byId("preview-note").textContent = `${preview.rationale} Orcamento estimado; efeitos exigem approval.`;
+  const document = preview.reference_document;
+  byId("preview-document").hidden = !document;
+  byId("preview-document").innerHTML = document
+    ? `<strong>${escapeText(document.document_name)}</strong><span>${document.source === "initiative_binding" ? "Vinculo existente da iniciativa" : "Selecionado para esta iniciativa"} | ${document.included_characters} caracteres no contexto${document.truncated ? " | conteudo limitado" : ""}</span>`
+    : "";
   byId("confirm-cost").checked = false;
   byId("start-run").disabled = true;
   byId("intake-preview").hidden = false;
+}
+
+async function scanDocuments() {
+  const workspaceRoot = byId("run-workspace").value.trim() || ".";
+  const button = byId("scan-documents");
+  button.disabled = true;
+  byId("document-status").textContent = "Procurando documentos no workspace...";
+  try {
+    const result = await api("/api/intake/documents", {
+      method: "POST",
+      body: JSON.stringify({ workspace_root: workspaceRoot }),
+    });
+    state.documentOptions = result.documents;
+    const select = byId("run-document");
+    const existing = select.value;
+    select.innerHTML = `<option value="">Usar vinculo existente ou seguir sem documento</option>${result.documents.map((document) =>
+      `<option value="${escapeText(document.document_ref)}">${escapeText(document.document_ref)} (${escapeText(document.document_format.toUpperCase())})</option>`
+    ).join("")}`;
+    if (result.documents.some((document) => document.document_ref === existing)) select.value = existing;
+    byId("document-status").textContent = result.documents.length
+      ? `${result.documents.length} documentos encontrados. Selecione a PRD para vincula-la a iniciativa.`
+      : "Nenhum documento compativel encontrado neste workspace.";
+  } catch (error) {
+    byId("document-status").textContent = error.message;
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function previewRun(event) {
@@ -706,9 +741,17 @@ document.querySelectorAll("[data-orchestration-tab]").forEach((button) =>
   button.addEventListener("click", () => switchOrchestrationTab(button.dataset.orchestrationTab))
 );
 byId("run-form").addEventListener("submit", previewRun);
+byId("scan-documents").addEventListener("click", scanDocuments);
 byId("start-run").addEventListener("click", startRun);
 byId("confirm-cost").addEventListener("change", (event) => { byId("start-run").disabled = !event.target.checked; });
-["run-goal", "run-project", "run-initiative", "run-workspace"].forEach((id) => byId(id).addEventListener("input", clearPreview));
+["run-goal", "run-project", "run-initiative"].forEach((id) => byId(id).addEventListener("input", clearPreview));
+byId("run-document").addEventListener("change", clearPreview);
+byId("run-workspace").addEventListener("input", () => {
+  clearPreview();
+  state.documentOptions = [];
+  byId("run-document").innerHTML = `<option value="">Nenhum documento selecionado</option>`;
+  byId("document-status").textContent = "Localize os documentos novamente para este workspace.";
+});
 byId("flow-run-select").addEventListener("change", (event) => renderFlow(event.target.value).catch((error) => toast(error.message, true)));
 byId("idea-form").addEventListener("submit", createIdea);
 loadAll();

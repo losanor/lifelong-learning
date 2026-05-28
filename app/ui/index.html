@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Squad Operations</title>
-  <link rel="stylesheet" href="/styles.css?v=7">
+  <link rel="stylesheet" href="/styles.css?v=8">
 </head>
 <body>
   <header class="topbar">
@@ -47,6 +47,19 @@
               <span>Objetivo</span>
               <textarea id="run-goal" required maxlength="4000" placeholder="Ex.: corrigir a tela de cadastro e validar a regressao."></textarea>
             </label>
+            <section class="reference-panel" aria-label="Documento de referencia">
+              <div class="reference-header">
+                <div><strong>Documento de referencia</strong><span>PRD ou especificacao usada como requisito primario</span></div>
+                <button class="action" id="scan-documents" type="button">Localizar no workspace</button>
+              </div>
+              <label class="select-field full">
+                <span>Arquivo vinculado a iniciativa</span>
+                <select id="run-document">
+                  <option value="">Nenhum documento selecionado</option>
+                </select>
+              </label>
+              <p class="reference-status muted" id="document-status">Formatos aceitos: .md, .txt, .rst e .docx.</p>
+            </section>
             <div class="intake-fields">
               <label class="field"><span>Projeto</span><input id="run-project" type="text" placeholder="cliente-produto"></label>
               <label class="field"><span>Iniciativa</span><input id="run-initiative" type="text" placeholder="cadastro-v1"></label>
@@ -62,6 +75,7 @@
               <div><span>Agentes</span><strong id="preview-agents"></strong></div>
             </div>
             <p class="preview-note" id="preview-note"></p>
+            <div class="document-preview" id="preview-document" hidden></div>
             <div class="launch-row">
               <label class="checkbox cost-check"><input id="confirm-cost" type="checkbox"> Confirmo esta run com modelo real.</label>
               <button class="action primary" id="start-run" type="button" disabled>Iniciar run</button>
@@ -269,6 +283,6 @@
     </main>
   </div>
   <div class="toast" id="toast" role="status" hidden></div>
-  <script defer src="/app.js?v=7"></script>
+  <script defer src="/app.js?v=8"></script>
 </body>
 </html>

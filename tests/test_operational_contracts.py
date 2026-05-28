@@ -7,6 +7,7 @@ import tempfile
 import threading
 import urllib.error
 import urllib.request
+import zipfile
 from unittest.mock import patch
 
 import app.graph as graph_module
@@ -46,6 +47,7 @@ from app.operational_store import (
     parking_lot_snapshot,
     pending_work_snapshot,
     promote_parking_lot_item,
+    bind_initiative_document,
     record_baseline_result,
     record_eval_result,
     record_handoff_event,
@@ -61,6 +63,7 @@ from app.orchestrator import inspect_agent_output, update_orchestrator_checks
 from app.retry_policy import initialize_retry_state, resolve_retry_permission
 from app.structured_output import CoSOutputEnvelope, mock_agent_output, safe_parse_agent_output
 from app.intake import decide_intake
+from app.reference_documents import list_reference_documents, load_reference_document
 from app.run_service import enqueue_manual_run, preview_manual_run
 from app.workspace_context import capture_workspace_context, format_workspace_context
 from cmo_especializado import CMOFactory
@@ -828,6 +831,95 @@ class OperationalContractsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             enqueue_manual_run({"user_goal": "Documentar README."})
 
+    def test_reference_document_is_loaded_and_reused_for_same_initiative(self):
+        db_path = Path("data") / "test_reference_document.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        Path("data").mkdir(exist_ok=True)
+        try:
+            with tempfile.TemporaryDirectory(dir="data") as temp_dir:
+                workspace = Path(temp_dir)
+                docs = workspace / "docs"
+                docs.mkdir()
+                (docs / "prd.md").write_text(
+                    "# Bot Concierge\n\nO bot deve responder duvidas e escalar casos sensiveis.",
+                    encoding="utf-8",
+                )
+                explicit = preview_manual_run(
+                    {
+                        "user_goal": "Construir o MVP do bot conforme a PRD.",
+                        "project_id": "Bot",
+                        "initiative_id": "MVP",
+                        "workspace_root": str(workspace),
+                        "reference_document_ref": "docs/prd.md",
+                    },
+                    include_document_content=True,
+                    db_path=db_path,
+                )
+                self.assertEqual(explicit["reference_document"]["document_ref"], "docs/prd.md")
+                self.assertIn("Bot Concierge", explicit["reference_document"]["content"])
+                bind_initiative_document(
+                    explicit["memory_namespace"],
+                    explicit["workspace_root"],
+                    explicit["reference_document"],
+                    db_path=db_path,
+                )
+                inherited = preview_manual_run(
+                    {
+                        "user_goal": "Planejar a proxima entrega do bot.",
+                        "project_id": "Bot",
+                        "initiative_id": "MVP",
+                        "workspace_root": str(workspace),
+                    },
+                    db_path=db_path,
+                )
+                self.assertEqual(inherited["reference_document"]["source"], "initiative_binding")
+                self.assertNotIn("content", inherited["reference_document"])
+                context_block = graph_module.workspace_context_block(
+                    {
+                        "reference_document": explicit["reference_document"],
+                        "workspace_context": {},
+                    },
+                    "product",
+                )
+                self.assertIn("requisito primario", context_block)
+                self.assertIn("Bot Concierge", context_block)
+                downstream_block = graph_module.workspace_context_block(
+                    {
+                        "reference_document": explicit["reference_document"],
+                        "workspace_context": {},
+                        "active_flow": "delivery_core",
+                    },
+                    "qa_planning",
+                )
+                self.assertNotIn("Bot Concierge", downstream_block)
+                self.assertIn("artefatos derivados", downstream_block)
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_reference_document_accepts_docx_without_external_dependency(self):
+        Path("data").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir="data") as temp_dir:
+            workspace = Path(temp_dir)
+            path = workspace / "prd.docx"
+            ignored = workspace / "node_modules"
+            ignored.mkdir()
+            (ignored / "vendor-prd.md").write_text("Nao indexar.", encoding="utf-8")
+            xml = (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:body><w:p><w:r><w:t>PRD do Bot</w:t></w:r></w:p>'
+                '<w:p><w:r><w:t>Atendimento supervisionado.</w:t></w:r></w:p></w:body></w:document>'
+            )
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("word/document.xml", xml)
+            loaded = load_reference_document(workspace, "prd.docx")
+            self.assertIn("Atendimento supervisionado.", loaded["content"])
+            indexed = list_reference_documents(workspace)
+            self.assertEqual(indexed[0]["document_format"], "docx")
+            self.assertFalse(any(item["document_ref"].startswith("node_modules/") for item in indexed))
+
     def test_operations_api_previews_and_queues_supervised_manual_run(self):
         from http.server import ThreadingHTTPServer
 
@@ -865,6 +957,15 @@ class OperationalContractsTest(unittest.TestCase):
                 preview = json.loads(response.read().decode("utf-8"))
             self.assertEqual(preview["active_flow"], "bugfix")
             self.assertEqual(preview["execution_policy"]["execution_tier"], "standard")
+            documents_request = urllib.request.Request(
+                f"{base_url}/api/intake/documents",
+                data=json.dumps({"workspace_root": "."}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(documents_request) as response:
+                documents = json.loads(response.read().decode("utf-8"))
+            self.assertTrue(any(item["document_ref"] == "README.md" for item in documents["documents"]))
 
             launch_request = urllib.request.Request(
                 f"{base_url}/api/runs",

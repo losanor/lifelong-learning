@@ -27,6 +27,7 @@ ela deve operar o runtime.
 Telas operacionais locais implementadas:
 
 - Caixa de entrada de demandas com `project_id` e `initiative_id`.
+- Intake de PRD com vinculacao persistente por iniciativa e contexto limitado/auditavel.
 - Board visual com trabalho a iniciar, em andamento, sob decisao humana, em aprovacao, concluido ou bloqueado.
 - Orquestracao com mapa configurado da squad, distincao entre agentes fixos/sob demanda, rotas condicionais, gate humano e historico executado por atividade.
 - Decisoes humanas pendentes com resposta registrada e retomada auditavel.

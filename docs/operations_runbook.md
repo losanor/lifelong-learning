@@ -32,6 +32,8 @@ $env:USE_MOCK_MODEL="true"
 ## Ciclo diario
 
 1. Cadastre uma demanda delimitada na console e confirme o tier/custo estimado.
+   Quando houver PRD, mantenha-a dentro do workspace, localize-a no intake e
+   confirme no preview o documento vinculado e o limite de contexto.
 2. Acompanhe a run em `Board` e o caminho percorrido em
    `Orquestracao > Execucoes`, incluindo os handoffs realmente registrados.
 3. Resolva itens em `Decisoes` antes de autorizar continuidade.
@@ -41,6 +43,10 @@ $env:USE_MOCK_MODEL="true"
    revisar evidencias. Depois, acione `Publicar e abrir PR draft`; o merge
    permanece fora da automacao.
 6. Sincronize traces em `Custos` e acompanhe tendencia em `Indicadores`.
+
+O vinculo da PRD e preservado por projeto/iniciativa. Em uma nova run do mesmo
+escopo, a console reaproveita o documento salvo, desde que ele ainda exista
+no mesmo workspace. Alteracoes no arquivo atualizam o hash na proxima run.
 
 ## Recuperacao e auditoria
 

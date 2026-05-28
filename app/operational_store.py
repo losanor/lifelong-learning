@@ -102,6 +102,19 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 memory_namespace TEXT NOT NULL DEFAULT ''
             );
 
+            CREATE TABLE IF NOT EXISTS initiative_documents (
+                memory_namespace TEXT PRIMARY KEY,
+                bound_at TEXT NOT NULL,
+                workspace_root TEXT NOT NULL,
+                document_ref TEXT NOT NULL,
+                document_name TEXT NOT NULL,
+                document_format TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                character_count INTEGER NOT NULL DEFAULT 0,
+                included_characters INTEGER NOT NULL DEFAULT 0,
+                truncated INTEGER NOT NULL DEFAULT 0
+            );
+
             CREATE TABLE IF NOT EXISTS eval_results (
                 evaluation_id TEXT NOT NULL,
                 scenario_id TEXT NOT NULL,
@@ -632,6 +645,66 @@ def record_handoff_event(
                 memory_namespace[:250],
             ),
         )
+
+
+def bind_initiative_document(
+    memory_namespace: str,
+    workspace_root: str,
+    document: dict[str, Any],
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> None:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO initiative_documents (
+                memory_namespace, bound_at, workspace_root, document_ref,
+                document_name, document_format, sha256, character_count,
+                included_characters, truncated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(memory_namespace) DO UPDATE SET
+                bound_at=excluded.bound_at,
+                workspace_root=excluded.workspace_root,
+                document_ref=excluded.document_ref,
+                document_name=excluded.document_name,
+                document_format=excluded.document_format,
+                sha256=excluded.sha256,
+                character_count=excluded.character_count,
+                included_characters=excluded.included_characters,
+                truncated=excluded.truncated
+            """,
+            (
+                memory_namespace[:250],
+                datetime.now(timezone.utc).isoformat(),
+                str(Path(workspace_root).resolve()),
+                document["document_ref"][:500],
+                document["document_name"][:240],
+                document["document_format"][:20],
+                document["sha256"][:80],
+                int(document["character_count"]),
+                int(document["included_characters"]),
+                int(document["truncated"]),
+            ),
+        )
+
+
+def initiative_document_snapshot(
+    memory_namespace: str,
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any] | None:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        row = connection.execute(
+            "SELECT * FROM initiative_documents WHERE memory_namespace=?",
+            (memory_namespace,),
+        ).fetchone()
+    if not row:
+        return None
+    document = dict(row)
+    document["truncated"] = bool(document["truncated"])
+    return document
 
 
 def record_execution_request(

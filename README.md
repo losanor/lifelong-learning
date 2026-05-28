@@ -48,6 +48,7 @@ Camadas compartilhadas:
 - `app/intake.py`: politica de agentes fixos e sinais de especialistas sob demanda.
 - `app/workspace_context.py`: snapshot local de Git, docs e arquivos disponiveis
   para trabalho real sem depender de LLM.
+- `app/reference_documents.py`: ingestao controlada de PRDs `.md`, `.txt`, `.rst` e `.docx`.
 - `app/operational_store.py`: persistencia SQLite de runs, outputs e metricas.
 - `app/evals.py`: bateria deterministica de cenarios para medir aplicacao real.
 - `app/orchestrator.py`: CMO textual e checks de Resumo Estruturado/ECE no grafo.
@@ -135,6 +136,13 @@ e enfileirada apos a confirmacao explicita do tier/custo. Ela aparece em
 para os dois approvals existentes antes de qualquer escrita. O limite exibido
 e orcamento operacional estimado, nao trava de cobranca do provedor do modelo.
 A API rejeita mutacoes originadas por paginas web externas ao host local.
+
+Para uma demanda orientada por PRD, coloque o documento dentro do workspace,
+use `Localizar no workspace` e selecione o arquivo antes de calcular a rota.
+O runtime inclui ate 18.000 caracteres do documento nos agentes que leem
+requisitos ou governanca, registra seu hash e reaproveita automaticamente o vinculo em novas runs da mesma
+iniciativa. Quando a PRD excede esse limite, a reducao fica indicada no
+preview e no contexto enviado aos agentes.
 
 A console operacional inclui:
 

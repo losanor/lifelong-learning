@@ -113,8 +113,38 @@ def format_agent_context(agent_name: str, state: SquadState) -> str:
     )
 
 
-def workspace_context_block(state: SquadState) -> str:
-    return f"Workspace Context:\n{format_workspace_context(state.get('workspace_context'))}\n\n"
+def workspace_context_block(state: SquadState, agent_name: str = "") -> str:
+    document = state.get("reference_document") or {}
+    reference_block = ""
+    primary_readers = {"discovery", "product", "writing", "privacy", "appsec", "cos"}
+    if state.get("active_flow") == "bugfix":
+        primary_readers.add("engineering")
+    if state.get("active_flow") == "review":
+        primary_readers.add("engineering_review")
+    if document.get("content") and agent_name in primary_readers:
+        truncation = (
+            "Conteudo truncado pelo limite de contexto; consulte o arquivo original para detalhes."
+            if document.get("truncated")
+            else "Conteudo carregado integralmente."
+        )
+        reference_block = (
+            "\nDocumento de referencia vinculado a iniciativa:\n"
+            f"Arquivo: {document.get('document_ref', '')}; SHA-256: {document.get('sha256', '')}; "
+            f"{truncation}\n"
+            "Trate este documento como requisito primario, identifique ambiguidades e nao invente "
+            "requisitos ausentes.\n\n"
+            f"{document['content']}\n\n"
+        )
+    elif document.get("document_ref"):
+        reference_block = (
+            "\nDocumento de referencia vinculado a iniciativa:\n"
+            f"Arquivo: {document.get('document_ref', '')}; conteudo primario processado por "
+            "agentes de requisitos e governanca nesta run. Use os artefatos derivados recebidos.\n\n"
+        )
+    return (
+        f"Workspace Context:\n{format_workspace_context(state.get('workspace_context'))}\n\n"
+        f"{reference_block}"
+    )
 
 
 def execution_policy_block(state: SquadState) -> str:
@@ -209,6 +239,11 @@ def build_operational_packet(
         "execution_ready": execution_ready,
         "human_checkpoint": human_checkpoint,
         "supporting_artifacts": artifacts,
+        "reference_document": {
+            key: value
+            for key, value in (state.get("reference_document") or {}).items()
+            if key != "content"
+        } or None,
     }
 
 
@@ -270,7 +305,7 @@ def discovery_node(state: SquadState):
         f"{prompt}\n\n"
         f"{cmo}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
-        f"{workspace_context_block(state)}"
+        f"{workspace_context_block(state, 'discovery')}"
     )
     
     append_handoff(
@@ -318,7 +353,7 @@ def writing_node(state: SquadState):
         f"{prompt}\n\n"
         f"{cmo}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
-        f"{workspace_context_block(state)}"
+        f"{workspace_context_block(state, 'writing')}"
         f"{context}"
     )
 
@@ -362,7 +397,7 @@ def ux_ui_node(state: SquadState):
         f"{prompt}\n\n"
         f"{cmo_block(state, 'ux_ui', 'Revisar experiencia e estados da entrega.', delivery_context, 'Gate UX/UI com criterios verificaveis, ECE e resumo.')}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
-        f"{workspace_context_block(state)}"
+        f"{workspace_context_block(state, 'ux_ui')}"
         f"Contexto da entrega:\n{delivery_context}"
     )
     if state.get("active_flow") == "bugfix":
@@ -406,7 +441,7 @@ def privacy_node(state: SquadState):
         f"{prompt}\n\n"
         f"{cmo_block(state, 'privacy', 'Revisar riscos de dados no fluxo ativo.', review_source, 'Gate Privacy com riscos, controles, ECE e resumo.')}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
-        f"{workspace_context_block(state)}"
+        f"{workspace_context_block(state, 'privacy')}"
         f"Engineering Specification:\n{engineering}\n\n"
         f"Engineering Review:\n{engineering_review}"
     )
@@ -442,7 +477,7 @@ def appsec_node(state: SquadState):
         f"{prompt}\n\n"
         f"{cmo_block(state, 'appsec', 'Revisar seguranca no fluxo ativo.', review_source, 'Gate AppSec com ameacas, controles, ECE e resumo.')}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
-        f"{workspace_context_block(state)}"
+        f"{workspace_context_block(state, 'appsec')}"
         f"Engineering Specification:\n{engineering}\n\n"
         f"Engineering Review:\n{engineering_review}\n\n"
         f"Privacy Gate:\n{privacy}"
@@ -485,7 +520,7 @@ def product_node(state: SquadState):
         f"{prompt}\n\n"
         f"{cmo}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
-        f"{workspace_context_block(state)}"
+        f"{workspace_context_block(state, 'product')}"
         f"{agent_context}"
         f"Discovery:\n{discovery}"
     )
@@ -536,7 +571,7 @@ def qa_planning_node(state: SquadState):
         f"{prompt}\n\n"
         f"{cmo}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
-        f"{workspace_context_block(state)}"
+        f"{workspace_context_block(state, 'qa_planning')}"
         f"Discovery:\n{discovery}\n\n"
         f"Product Brief:\n{product}\n\n"
         f"UX/UI Gate:\n{ux_ui}"
@@ -590,7 +625,7 @@ def engineering_node(state: SquadState):
         f"{prompt}\n\n"
         f"{cmo}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
-        f"{workspace_context_block(state)}"
+        f"{workspace_context_block(state, 'engineering')}"
         f"{agent_context}"
         f"Discovery:\n{discovery}\n\n"
         f"Product Brief:\n{product}\n\n"
@@ -646,7 +681,7 @@ def operator_node(state: SquadState):
         f"{prompt}\n\n"
         f"{cmo}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
-        f"{workspace_context_block(state)}"
+        f"{workspace_context_block(state, 'operator')}"
         f"Product Brief:\n{product}\n\n"
         f"QA Planning:\n{qa_plan}\n\n"
         f"Engineering Specification:\n{engineering}\n\n"
@@ -707,7 +742,7 @@ def engineering_review_node(state: SquadState):
         f"{prompt}\n\n"
         f"{cmo}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
-        f"{workspace_context_block(state)}"
+        f"{workspace_context_block(state, 'engineering_review')}"
         f"Product Brief:\n{product}\n\n"
         f"QA Planning:\n{qa_plan}\n\n"
         f"Engineering Specification:\n{engineering}\n\n"
@@ -767,7 +802,7 @@ def qa_execution_node(state: SquadState):
         f"{prompt}\n\n"
         f"{cmo}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
-        f"{workspace_context_block(state)}"
+        f"{workspace_context_block(state, 'qa_execution')}"
         f"{agent_context}"
         f"QA Planning:\n{qa_plan}\n\n"
         f"Engineering Specification:\n{engineering}\n\n"
@@ -837,7 +872,7 @@ def cos_node(state: SquadState):
         f"Fluxo ativo:\n{state.get('active_flow', '')}\n\n"
         f"Justificativa do intake:\n{state.get('intake_rationale', '')}\n\n"
         "Artefatos ausentes podem ser esperados em fluxos curtos como docs, review, research_only, decision_only e bugfix.\n\n"
-        f"{workspace_context_block(state)}"
+        f"{workspace_context_block(state, 'cos')}"
         f"{execution_policy_block(state)}"
         f"{agent_context}"
         f"Product Brief:\n{product}\n\n"

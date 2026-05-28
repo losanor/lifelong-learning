@@ -16,6 +16,7 @@ class SquadState(TypedDict, total=False):
     initiative_id: str
     memory_namespace: str
     operational_db_path: str
+    reference_document: dict
 
     context_mode: str
     context_policy: str

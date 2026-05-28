@@ -12,8 +12,16 @@ from app.context_policy import build_context_bundle
 from app.execution_engine import create_execution_request
 from app.intake import decide_intake
 from app.observability import build_run_config, langsmith_ready
-from app.operational_store import DEFAULT_DB_PATH, record_run, record_run_started, update_run_status
+from app.operational_store import (
+    DEFAULT_DB_PATH,
+    bind_initiative_document,
+    initiative_document_snapshot,
+    record_run,
+    record_run_started,
+    update_run_status,
+)
 from app.project_scope import resolve_work_scope
+from app.reference_documents import list_reference_documents, load_reference_document
 from app.retry_policy import initialize_retry_state
 from app.run_registry import append_run_end, append_run_start, generate_run_id
 from app.workspace_context import capture_workspace_context
@@ -22,7 +30,44 @@ from app.workspace_context import capture_workspace_context
 RUN_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="squad-run")
 
 
-def preview_manual_run(payload: dict[str, Any]) -> dict[str, Any]:
+def available_reference_documents(payload: dict[str, Any]) -> dict[str, Any]:
+    workspace_root = str(payload.get("workspace_root", ".")).strip() or "."
+    return {
+        "workspace_root": str(Path(workspace_root).expanduser().resolve()),
+        "documents": list_reference_documents(workspace_root),
+    }
+
+
+def _reference_document_for_run(
+    payload: dict[str, Any],
+    *,
+    workspace_root: str,
+    memory_namespace: str,
+    include_content: bool,
+    db_path: str | Path,
+) -> dict[str, Any] | None:
+    requested_ref = str(payload.get("reference_document_ref", "")).strip()
+    source = "selected"
+    if not requested_ref:
+        bound = initiative_document_snapshot(memory_namespace, db_path=db_path)
+        if bound and str(Path(workspace_root).resolve()) == bound["workspace_root"]:
+            requested_ref = bound["document_ref"]
+            source = "initiative_binding"
+    if not requested_ref:
+        return None
+    document = load_reference_document(workspace_root, requested_ref)
+    document["source"] = source
+    if not include_content:
+        document.pop("content", None)
+    return document
+
+
+def preview_manual_run(
+    payload: dict[str, Any],
+    *,
+    include_document_content: bool = False,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
     user_goal = str(payload.get("user_goal", "")).strip()
     if not user_goal:
         raise ValueError("Descreva o objetivo da demanda.")
@@ -39,6 +84,13 @@ def preview_manual_run(payload: dict[str, Any]) -> dict[str, Any]:
         project_id=str(payload.get("project_id", "")).strip() or None,
         initiative_id=str(payload.get("initiative_id", "")).strip() or None,
     )
+    reference_document = _reference_document_for_run(
+        payload,
+        workspace_root=str(workspace.resolve()),
+        memory_namespace=scope.memory_namespace,
+        include_content=include_document_content,
+        db_path=db_path,
+    )
     intake = decide_intake(user_goal)
     return {
         "user_goal": user_goal,
@@ -49,6 +101,7 @@ def preview_manual_run(payload: dict[str, Any]) -> dict[str, Any]:
         "on_demand_agents": list(intake.on_demand_agents),
         "rationale": intake.rationale,
         "execution_policy": intake.execution_policy,
+        "reference_document": reference_document,
     }
 
 
@@ -60,7 +113,14 @@ def enqueue_manual_run(
     if payload.get("cost_confirmed") is not True:
         raise ValueError("Confirme o tier e o limite estimado antes de iniciar a run.")
 
-    preview = preview_manual_run(payload)
+    preview = preview_manual_run(payload, include_document_content=True, db_path=db_path)
+    if preview.get("reference_document"):
+        bind_initiative_document(
+            preview["memory_namespace"],
+            preview["workspace_root"],
+            preview["reference_document"],
+            db_path=db_path,
+        )
     run_id = generate_run_id()
     trace_id = uuid4() if langsmith_ready() else None
     record_run_started(
@@ -83,6 +143,11 @@ def enqueue_manual_run(
         "initiative_id": preview["initiative_id"],
         "execution_policy": preview["execution_policy"],
         "trace_id": str(trace_id) if trace_id else "",
+        "reference_document": {
+            key: value
+            for key, value in (preview.get("reference_document") or {}).items()
+            if key != "content"
+        } or None,
     }
 
 
@@ -112,6 +177,7 @@ def _execute_manual_run(
                 "initiative_id": preview["initiative_id"],
                 "memory_namespace": preview["memory_namespace"],
                 "operational_db_path": str(db_path),
+                "reference_document": preview.get("reference_document"),
                 "work_scope": {
                     "project_id": preview["project_id"],
                     "initiative_id": preview["initiative_id"],
