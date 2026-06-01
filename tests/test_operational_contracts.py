@@ -31,7 +31,9 @@ from app.execution_engine import (
     create_execution_request,
     decide_apply_execution,
     decide_execution_request,
+    generate_candidate_patch,
     prepare_execution_request,
+    requires_execution_gate,
     rollback_execution_request,
 )
 from app.operational_store import (
@@ -51,9 +53,11 @@ from app.operational_store import (
     record_baseline_result,
     record_eval_result,
     record_handoff_event,
+    record_functional_qa_result,
     record_run,
     record_run_started,
     recent_runs_snapshot,
+    respond_human_decision,
     run_flow_snapshot,
     update_run_status,
     update_human_review,
@@ -393,6 +397,142 @@ class OperationalContractsTest(unittest.TestCase):
             if db_path.exists():
                 db_path.unlink()
 
+    def test_execution_gate_promotes_file_creation_before_qa(self):
+        db_path = Path("data") / "test_execution_gate.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        try:
+            result = {
+                "active_flow": "delivery_core",
+                "execution_policy": {
+                    "execution_tier": "full",
+                    "approval_required_actions": ["write_files"],
+                },
+                "work_scope": {
+                    "project_id": "meu-bot",
+                    "initiative_id": "default",
+                    "memory_namespace": "meu-bot:default",
+                },
+                "operational_packet": {
+                    "execution_ready": False,
+                    "governance_blocked": True,
+                    "decision": "NO_GO",
+                    "workspace_root": "C:\\Users\\Akira\\meu bot",
+                    "target_refs": [
+                        "C:\\Users\\Akira\\meu bot\\bot.py",
+                        "C:\\Users\\Akira\\meu bot\\requirements.txt",
+                        "C:\\Users\\Akira\\meu bot\\.env.example",
+                    ],
+                    "recommended_actions": [
+                        "Criar bot.py",
+                        "Executar: pip install -r requirements.txt",
+                        "Executar: python bot.py",
+                    ],
+                    "verification_steps": ["python bot.py inicializa sem erro"],
+                    "git_actions": [],
+                },
+                "structured_outputs": {},
+                "orchestrator_checks": {},
+            }
+
+            self.assertTrue(requires_execution_gate(result["operational_packet"]))
+            record_run(result, run_id="run_gate", user_goal="Criar bot.", db_path=db_path)
+            request = create_execution_request(result, run_id="run_gate", db_path=db_path)
+
+            self.assertEqual(request["status"], "pending_approval")
+            self.assertTrue(request["approval_required"])
+            self.assertEqual(request["requested_effects"], ["write_files"])
+            self.assertEqual(request["target_refs"], ["bot.py", "requirements.txt", ".env.example"])
+            self.assertIn("before QA", request["status_reason"])
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_implementation_operator_generates_bot_patch_after_preparation_approval(self):
+        db_path = Path("data") / "test_operator_auto_patch.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        Path("data").mkdir(exist_ok=True)
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                workspace = Path(temp_dir)
+                (workspace / "BOT.txt").write_text("Metodo de aprendizagem do usuario.", encoding="utf-8")
+                result = {
+                    "active_flow": "delivery_core",
+                    "execution_policy": {
+                        "execution_tier": "full",
+                        "approval_required_actions": ["write_files"],
+                    },
+                    "work_scope": {
+                        "project_id": "meu-bot",
+                        "initiative_id": "default",
+                        "memory_namespace": "meu-bot:default",
+                    },
+                    "operational_packet": {
+                        "execution_ready": False,
+                        "governance_blocked": True,
+                        "decision": "NO_GO",
+                        "workspace_root": str(workspace),
+                        "target_refs": ["bot.py", "requirements.txt", ".env"],
+                        "recommended_actions": [
+                            "Criar bot.py para Telegram",
+                            "Criar requirements.txt",
+                            "Criar .env.example",
+                        ],
+                        "verification_steps": ["python bot.py inicializa sem erro"],
+                        "git_actions": [],
+                    },
+                    "structured_outputs": {},
+                    "orchestrator_checks": {},
+                }
+                record_run(result, run_id="run_auto_patch", user_goal="Criar bot.", db_path=db_path)
+                request = create_execution_request(result, run_id="run_auto_patch", db_path=db_path)
+                decide_execution_request(
+                    request["request_id"],
+                    decision="approved",
+                    decided_by="owner",
+                    db_path=db_path,
+                )
+
+                prepared = prepare_execution_request(
+                    request["request_id"],
+                    workspace_root=workspace,
+                    db_path=db_path,
+                )
+
+                self.assertEqual(prepared["status"], "awaiting_apply_approval")
+                self.assertIn("Implementation Operator", prepared["status_reason"])
+                self.assertEqual(prepared["target_refs"], ["bot.py", "requirements.txt", ".env.example", "test_bot.py", ".gitignore", "README.md"])
+                self.assertEqual(prepared["preparation"]["preparation_status"], "patch_validated")
+                self.assertTrue(prepared["preparation"]["validation"]["passed"])
+                self.assertTrue(prepared["preparation"]["validation"]["generated_by_operator"])
+                self.assertIn("diff --git a/bot.py b/bot.py", prepared["preparation"]["patch_text"])
+                self.assertIn("diff --git a/.env.example b/.env.example", prepared["preparation"]["patch_text"])
+                self.assertIn("diff --git a/test_bot.py b/test_bot.py", prepared["preparation"]["patch_text"])
+                self.assertIn("class SessionStage", prepared["preparation"]["patch_text"])
+                self.assertNotIn("diff --git a/.env b/.env", prepared["preparation"]["patch_text"])
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_operator_regenerates_outdated_managed_bot_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "bot.py").write_text("# scaffold antigo\n", encoding="utf-8")
+            request = {
+                "target_refs": ["bot.py", "requirements.txt"],
+                "recommended_actions": ["Criar bot.py para Telegram"],
+                "verification_steps": ["Validar bot."],
+                "operational_packet": {},
+            }
+
+            patch_text, refs = generate_candidate_patch(request, workspace_root=workspace)
+
+            self.assertIn("--- a/bot.py", patch_text)
+            self.assertIn("+++ b/bot.py", patch_text)
+            self.assertIn("class SessionStage", patch_text)
+            self.assertIn("test_bot.py", refs)
+
     def test_preparation_validates_scoped_patch_before_second_approval(self):
         db_path = Path("data") / "test_patch_preparation.sqlite3"
         if db_path.exists():
@@ -603,6 +743,7 @@ class OperationalContractsTest(unittest.TestCase):
                         "candidate_patch_prepared",
                         "apply_approval_decided",
                         "application_validated",
+                        "qa_smoke_completed",
                     ],
                 )
                 pending = pending_work_snapshot(db_path)
@@ -618,6 +759,161 @@ class OperationalContractsTest(unittest.TestCase):
                 self.assertFalse(rolled_back["effects_enabled"])
                 self.assertEqual(target.read_text(encoding="utf-8"), "# Before\n\nContext.\n")
                 self.assertEqual(pending_work_snapshot(db_path)["pending_count"], 0)
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_apply_skips_git_diff_validation_when_workspace_is_not_git_repo(self):
+        db_path = Path("data") / "test_apply_non_git_workspace.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        Path("data").mkdir(exist_ok=True)
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                workspace = Path(temp_dir)
+                result = {
+                    "active_flow": "docs",
+                    "execution_policy": {"approval_required_actions": ["write_files"]},
+                    "route_status": "ended",
+                    "operational_packet": {
+                        "execution_ready": True,
+                        "target_refs": ["README.md"],
+                        "recommended_actions": ["Criar README."],
+                        "verification_steps": ["Validar arquivo."],
+                        "git_actions": [],
+                    },
+                    "structured_outputs": {},
+                    "orchestrator_checks": {},
+                }
+                record_run(result, run_id="run_non_git_apply", user_goal="Criar README.", db_path=db_path)
+                request = create_execution_request(result, run_id="run_non_git_apply", db_path=db_path)
+                decide_execution_request(
+                    request["request_id"], decision="approved", decided_by="owner", db_path=db_path
+                )
+                patch = (
+                    "diff --git a/README.md b/README.md\n"
+                    "new file mode 100644\n"
+                    "--- /dev/null\n"
+                    "+++ b/README.md\n"
+                    "@@ -0,0 +1,1 @@\n"
+                    "+# Created outside Git\n"
+                )
+                prepare_execution_request(
+                    request["request_id"],
+                    patch_text=patch,
+                    workspace_root=workspace,
+                    db_path=db_path,
+                )
+                decide_apply_execution(
+                    request["request_id"], decision="approved", decided_by="owner", db_path=db_path
+                )
+
+                applied = apply_execution_request(
+                    request["request_id"],
+                    workspace_root=workspace,
+                    validations=["git_diff_check"],
+                    db_path=db_path,
+                )
+
+                self.assertEqual(applied["status"], "applied_validated")
+                self.assertEqual((workspace / "README.md").read_text(encoding="utf-8"), "# Created outside Git\n")
+                preset = applied["application"]["validation"]["presets"][0]
+                self.assertTrue(preset["passed"])
+                self.assertTrue(preset["skipped"])
+                self.assertTrue(applied["application"]["git_evidence"]["diff_stat"]["skipped"])
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_apply_bot_opens_external_input_decision_after_smoke_validation(self):
+        db_path = Path("data") / "test_apply_bot_external_input.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        Path("data").mkdir(exist_ok=True)
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                workspace = Path(temp_dir)
+                (workspace / "BOT.txt").write_text("Metodo de aprendizagem.", encoding="utf-8")
+                result = {
+                    "active_flow": "delivery_core",
+                    "execution_policy": {"approval_required_actions": ["write_files"]},
+                    "work_scope": {
+                        "project_id": "meu-bot",
+                        "initiative_id": "default",
+                        "memory_namespace": "meu-bot:default",
+                    },
+                    "route_status": "ended",
+                    "operational_packet": {
+                        "execution_ready": False,
+                        "governance_blocked": True,
+                        "decision": "NO_GO",
+                        "workspace_root": str(workspace),
+                        "target_refs": ["bot.py", "requirements.txt", ".env.example"],
+                        "recommended_actions": ["Criar bot.py para Telegram"],
+                        "verification_steps": ["Validar bot."],
+                        "git_actions": [],
+                    },
+                    "structured_outputs": {},
+                    "orchestrator_checks": {},
+                }
+                record_run(result, run_id="run_bot_apply", user_goal="Criar bot.", db_path=db_path)
+                request = create_execution_request(result, run_id="run_bot_apply", db_path=db_path)
+                decide_execution_request(request["request_id"], decision="approved", decided_by="owner", db_path=db_path)
+                prepare_execution_request(request["request_id"], workspace_root=workspace, db_path=db_path)
+                decide_apply_execution(request["request_id"], decision="approved", decided_by="owner", db_path=db_path)
+
+                applied = apply_execution_request(
+                    request["request_id"],
+                    workspace_root=workspace,
+                    validations=["git_diff_check"],
+                    db_path=db_path,
+                )
+
+                self.assertEqual(applied["status"], "applied_validated")
+                decisions = human_decision_snapshot(db_path, include_validation=True)
+                self.assertEqual(decisions["actionable_pending_count"], 1)
+                self.assertIn("TELEGRAM_TOKEN", decisions["decisions"][0]["decision_needed"])
+                self.assertEqual(
+                    workflow_checkpoint_snapshot(thread_id="run_bot_apply", db_path=db_path)["checkpoints"][-1]["stage"],
+                    "external_input_required",
+                )
+                self.assertEqual(pending_work_snapshot(db_path)["pending"][0]["next_action"], "Responder pendencia humana: Decidir continuidade da demanda.")
+                with self.assertRaisesRegex(ValueError, "TELEGRAM_TOKEN"):
+                    respond_human_decision(
+                        "decision_run_bot_apply_external_input",
+                        response="Token configurado.",
+                        resolution="continue",
+                        db_path=db_path,
+                    )
+
+                (workspace / ".env").write_text("TELEGRAM_TOKEN=123:test\n", encoding="utf-8")
+                resolved = respond_human_decision(
+                    "decision_run_bot_apply_external_input",
+                    response="Token configurado.",
+                    resolution="continue",
+                    db_path=db_path,
+                )
+                self.assertEqual(resolved["status"], "resolved")
+                self.assertEqual(
+                    workflow_checkpoint_snapshot(thread_id="run_bot_apply", db_path=db_path)["checkpoints"][-1]["stage"],
+                    "external_input_confirmed",
+                )
+                flow = run_flow_snapshot(run_id="run_bot_apply", db_path=db_path)
+                self.assertEqual(flow["run"]["status"], "return_requested")
+                self.assertEqual(flow["run"]["operational_packet"]["product_acceptance_status"], "functional_qa_pending")
+
+                accepted = record_functional_qa_result(
+                    "run_bot_apply",
+                    passed=True,
+                    evidence="Enviei /start, percorri o ciclo, validei /status e /reset no Telegram.",
+                    db_path=db_path,
+                )
+                self.assertEqual(accepted["status"], "ended")
+                self.assertEqual(accepted["product_acceptance_status"], "product_accepted")
+                self.assertEqual(
+                    workflow_checkpoint_snapshot(thread_id="run_bot_apply", db_path=db_path)["checkpoints"][-1]["stage"],
+                    "functional_qa_passed",
+                )
         finally:
             if db_path.exists():
                 db_path.unlink()
@@ -1155,6 +1451,10 @@ class OperationalContractsTest(unittest.TestCase):
 
             decisions = human_decision_snapshot(db_path)
             self.assertEqual(decisions["pending_count"], 1)
+            self.assertEqual(decisions["decisions"][0]["decision_title"], "Decidir continuidade da demanda")
+            self.assertIn("Product Lead -> CoS / Orchestrator", decisions["decisions"][0]["what_happened"])
+            self.assertEqual(decisions["decisions"][0]["previous_step"]["artifact"], "Product Decision")
+            self.assertEqual(len(decisions["decisions"][0]["human_options"]), 3)
             connection = sqlite3.connect(db_path)
             try:
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM human_decisions").fetchone()[0], 0)
@@ -1193,6 +1493,12 @@ class OperationalContractsTest(unittest.TestCase):
             with urllib.request.urlopen(f"{base_url}/api/topology") as response:
                 topology = json.loads(response.read().decode("utf-8"))
             self.assertIn("cos", topology["core_path"])
+            self.assertTrue(
+                any(
+                    interaction["from"] == "intake" and interaction["to"] == "cos"
+                    for interaction in topology["connections"]
+                )
+            )
             self.assertEqual(
                 next(agent["mode"] for agent in topology["agents"] if agent["id"] == "discovery"),
                 "on_demand",
@@ -1255,6 +1561,72 @@ class OperationalContractsTest(unittest.TestCase):
                 server.server_close()
             if thread:
                 thread.join(timeout=2)
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_human_decisions_preserve_scope_order(self):
+        db_path = Path("data") / "test_decision_governance.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        try:
+            base_result = {
+                "active_flow": "decision_only",
+                "execution_policy": {"execution_tier": "quick", "max_cost_usd": 0.15},
+                "work_scope": {
+                    "project_id": "portal",
+                    "initiative_id": "pricing",
+                    "memory_namespace": "portal:pricing",
+                },
+                "route_status": "human_escalation",
+                "cos_decision": "ESCALATE_TO_HUMAN",
+                "route_decision": "human_escalation",
+                "human_escalation_created": True,
+                "human_escalation_reason": "Decisao comercial exige validacao humana.",
+                "human_required_decision": "Definir direcao comercial.",
+                "operational_packet": {"execution_ready": False},
+                "structured_outputs": {
+                    "cos": {
+                        "summary": {"ece": "C2"},
+                        "operational_artifact": {"artifact_type": "decision", "execution_ready": False},
+                    },
+                },
+                "orchestrator_checks": {},
+            }
+            record_run(base_result, run_id="run_first_decision", user_goal="Definir preco.", db_path=db_path)
+            record_run(base_result, run_id="run_second_decision", user_goal="Definir campanha.", db_path=db_path)
+
+            snapshot = human_decision_snapshot(db_path)
+            decisions = {item["decision_id"]: item for item in snapshot["decisions"]}
+            self.assertEqual(snapshot["pending_count"], 2)
+            self.assertEqual(snapshot["actionable_pending_count"], 1)
+            self.assertEqual(snapshot["blocked_pending_count"], 1)
+            self.assertTrue(decisions["decision_run_first_decision"]["is_actionable"])
+            self.assertFalse(decisions["decision_run_second_decision"]["is_actionable"])
+            self.assertEqual(
+                decisions["decision_run_second_decision"]["blocked_by_decision_id"],
+                "decision_run_first_decision",
+            )
+
+            with self.assertRaisesRegex(ValueError, "Resolva primeiro"):
+                respond_human_decision(
+                    "decision_run_second_decision",
+                    response="Seguir campanha.",
+                    resolution="continue",
+                    db_path=db_path,
+                )
+
+            respond_human_decision(
+                "decision_run_first_decision",
+                response="Preco aprovado.",
+                resolution="continue",
+                db_path=db_path,
+            )
+            refreshed = {
+                item["decision_id"]: item
+                for item in human_decision_snapshot(db_path)["decisions"]
+            }
+            self.assertTrue(refreshed["decision_run_second_decision"]["is_actionable"])
+        finally:
             if db_path.exists():
                 db_path.unlink()
 
@@ -1527,6 +1899,86 @@ class OperationalContractsTest(unittest.TestCase):
         self.assertEqual(decision.active_flow, "delivery_core")
         self.assertIn("product", decision.fixed_agents)
 
+    def test_cos_intake_gate_records_operational_brief_before_first_agent(self):
+        db_path = Path("data") / "test_cos_intake_gate.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        try:
+            state = {
+                "run_id": "run_cos_intake",
+                "user_goal": "Criar bot de Telegram conforme PRD.",
+                "active_flow": "delivery_core",
+                "fixed_agents": ["product", "qa_planning", "engineering", "cos"],
+                "on_demand_agents": [],
+                "execution_policy": {"execution_tier": "full", "max_cost_usd": 1.2},
+                "memory_namespace": "tests:cos-intake",
+                "operational_db_path": str(db_path),
+            }
+
+            result = graph_module.cos_intake_node(state)
+
+            self.assertEqual(result["cos_intake_target"], "product")
+            self.assertIn("CoS Intake Brief", result["cos_intake_output"])
+            flow = run_flow_snapshot(run_id="run_cos_intake", db_path=db_path)
+            self.assertEqual(flow["handoffs"][0]["source_agent"], "CoS / Intake Gate")
+            self.assertEqual(flow["handoffs"][0]["target_agent"], "Product Lead")
+        finally:
+            if db_path.exists():
+                db_path.unlink()
+
+    def test_cos_intake_gate_uses_llm_only_when_risk_requires_review(self):
+        class FailingModel:
+            def invoke(self, prompt):
+                raise AssertionError("LLM should not be called for simple intake.")
+
+        simple_state = {
+            "run_id": "run_simple_cos_intake",
+            "user_goal": "Criar feature de cadastro.",
+            "active_flow": "delivery_core",
+            "fixed_agents": ["product", "qa_planning", "engineering"],
+            "on_demand_agents": [],
+            "execution_policy": {"execution_tier": "full", "max_cost_usd": 1.2},
+        }
+        with patch.object(graph_module, "model", FailingModel()):
+            result = graph_module.cos_intake_node(simple_state)
+        self.assertEqual(result["cos_intake_mode"], "deterministic")
+        self.assertEqual(result["cos_intake_target"], "product")
+
+        class RoutingModel:
+            def invoke(self, prompt):
+                return MockResponse(
+                    '{"target":"engineering","rationale":"Risco tecnico controlado pede Engenharia primeiro.","confidence":"C2"}'
+                )
+
+        controlled_state = {
+            **simple_state,
+            "run_id": "run_controlled_cos_intake",
+            "user_goal": "Corrigir comportamento sensivel de autenticacao.",
+            "execution_policy": {"execution_tier": "controlled", "max_cost_usd": 0.8},
+        }
+        with patch.object(graph_module, "model", RoutingModel()):
+            result = graph_module.cos_intake_node(controlled_state)
+        self.assertEqual(result["cos_intake_mode"], "llm_review")
+        self.assertEqual(result["cos_intake_target"], "engineering")
+        self.assertIn("Risco tecnico", result["cos_intake_rationale"])
+
+    def test_intake_prioritizes_delivery_when_document_is_context(self):
+        decision = decide_intake(
+            "Criar um bot de Telegram usando a documentacao anexa como contexto da PRD."
+        )
+
+        self.assertEqual(decision.active_flow, "delivery_core")
+        self.assertEqual(decision.execution_policy["execution_tier"], "full")
+        self.assertIn("product", decision.fixed_agents)
+        self.assertIn("ux_ui", decision.on_demand_agents)
+
+    def test_bot_intake_calls_conversation_ux_without_new_fixed_agent(self):
+        decision = decide_intake("Criar chatbot no Telegram para estudar assuntos da PRD.")
+
+        self.assertEqual(decision.active_flow, "delivery_core")
+        self.assertIn("ux_ui", decision.on_demand_agents)
+        self.assertNotIn("ux_ui", decision.fixed_agents)
+
     def test_intake_calls_discovery_for_market_goal(self):
         decision = decide_intake("Fazer benchmark de concorrentes para validar hipotese de mercado.")
 
@@ -1670,6 +2122,51 @@ class OperationalContractsTest(unittest.TestCase):
 
         self.assertEqual(decision.active_flow, "review")
         self.assertIn("appsec", decision.on_demand_agents)
+
+    def test_graph_contains_no_hardcoded_project_literals(self):
+        """graph.py must not embed project-specific history (IDs, backlog items, code-names)."""
+        graph_path = Path(__file__).resolve().parent.parent / "app" / "graph.py"
+        source = graph_path.read_text(encoding="utf-8").lower()
+        forbidden = [
+            "mvp sujo",
+            "b-001",
+            "b-002",
+            "d-001",
+            "d-002",
+            "d-003",
+            "d-004",
+            "d-005",
+        ]
+        for literal in forbidden:
+            self.assertNotIn(literal, source, f"graph.py contains project literal: {literal!r}")
+
+    def test_clean_data_seeds_detects_known_literals(self):
+        """clean_data_seeds must detect project-specific literals in seed files."""
+        import importlib.util
+        import tempfile
+
+        script_path = Path(__file__).resolve().parent.parent / "scripts" / "clean_data_seeds.py"
+        spec = importlib.util.spec_from_file_location("clean_data_seeds", script_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dirty_file = Path(tmp) / "shared_memory.md"
+            dirty_file.write_text("# Test\nMVP Sujo was here\nB-001 open\nD-003 done\n", encoding="utf-8")
+            clean_file = Path(tmp) / "decision_log.md"
+            clean_file.write_text("# Clean\nNenhum dado relevante aqui.\n", encoding="utf-8")
+
+            dirty_hits = module._matches_in_file(dirty_file)
+            clean_hits = module._matches_in_file(clean_file)
+
+            self.assertTrue(len(dirty_hits) >= 2, f"Expected >=2 literal matches, got {dirty_hits}")
+            matched_literals = {h[1] for h in dirty_hits}
+            self.assertIn("mvp sujo", matched_literals)
+            self.assertIn("b-001", matched_literals)
+            self.assertEqual(clean_hits, [], "Clean file should have no matches")
+            # _clear_file empties the file without deleting it
+            module._clear_file(dirty_file)
+            self.assertEqual(dirty_file.read_text(encoding="utf-8"), "")
 
 
 if __name__ == "__main__":

@@ -752,7 +752,7 @@ def product_node(state: SquadState):
         "product",
         "Transformar Discovery em escopo funcional testavel.",
         discovery,
-        "Product Brief com MVP Sujo, EME, ECE e Resumo Estruturado.",
+        "Product Brief com escopo funcional, requisitos, ECE e Resumo Estruturado.",
     )
 
     response = invoke_validated("product",
@@ -774,7 +774,7 @@ def product_node(state: SquadState):
         artifact="Product Brief",
         summary=response.content[:500],
         ece="C2",
-        blockers="Engineering completa bloqueada se houver dependências C3 críticas.",
+        blockers="Engineering bloqueada se houver dependências C3 críticas não resolvidas.",
         next_step="QA Planning deve avaliar testabilidade e definir Go/No-Go.",
         escalate_to_cos="Não."
     )
@@ -882,7 +882,7 @@ def engineering_node(state: SquadState):
         artifact="Engineering Specification",
         summary=response.content[:500],
         ece="C1/C2",
-        blockers="Nenhum bloqueio para MVP Sujo quando o escopo técnico estiver restrito.",
+        blockers="Sem bloqueios identificados neste ciclo.",
         next_step="Implementation Operator deve gerar pacote operacional para Claude Code.",
         escalate_to_cos="Não."
     )
@@ -938,7 +938,7 @@ def operator_node(state: SquadState):
         artifact="Implementation Package",
         summary=response.content[:500],
         ece="C2",
-        blockers="Nenhum bloqueio para MVP Sujo quando o escopo técnico estiver restrito.",
+        blockers="Sem bloqueios identificados neste ciclo.",
         next_step="Engineering Lead deve revisar aderencia antes do QA Execution.",
         escalate_to_cos="Não."
     )
@@ -1062,7 +1062,7 @@ def qa_execution_node(state: SquadState):
         artifact="QA Execution Report",
         summary=response.content[:500],
         ece="C1",
-        blockers="B-001 e B-002 podem permanecer abertos dependendo do ciclo.",
+        blockers="Bloqueios abertos dependem da avaliação final do CoS neste ciclo.",
         next_step="CoS deve avaliar coerência do ciclo, bloqueios e decisão de roteamento.",
         escalate_to_cos="Sim. Avaliação final do ciclo é responsabilidade do CoS."
     )
@@ -1248,8 +1248,8 @@ def cos_node(state: SquadState):
         if decision == "GO_WITH_RESTRICTIONS":
             handoff_to = "Product Lead / Human Checkpoint"
             handoff_blockers = (
-                "B-001 permanece ativo: Engineering completa não aprovada. "
-                "B-002 permanece ativo: critérios do experimento precisam ser definidos."
+                "Engineering completa não aprovada. "
+                "Critérios do experimento precisam ser definidos antes da execução."
             )
             handoff_next_step = (
                 "Product Lead deve definir número de usuários, duração, "
