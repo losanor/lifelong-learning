@@ -43,11 +43,17 @@ class CodexAdapter(CodeExecutorAdapter):
             usage = getattr(response, "usage", None)
             if usage is not None:
                 tokens_used = getattr(usage, "total_tokens", None)
+            # Detect incomplete responses: status field != "completed" or
+            # incomplete_details present (max_output_tokens / content_filter / etc.)
+            status = getattr(response, "status", "completed")
+            incomplete_details = getattr(response, "incomplete_details", None)
+            partial = status != "completed" or incomplete_details is not None
             return ExecutionResult(
-                success=True,
+                success=not partial,
                 output=output.strip() if isinstance(output, str) else str(output),
                 tokens_used=tokens_used,
-                exit_code=0,
+                exit_code=0 if not partial else -1,
+                partial=partial,
             )
         except Exception as exc:
             return ExecutionResult(success=False, errors=str(exc), exit_code=-1)

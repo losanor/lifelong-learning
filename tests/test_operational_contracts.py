@@ -2756,6 +2756,8 @@ class ExecutorPackageTests(unittest.TestCase):
         mock_resp = MagicMock()
         mock_resp.output_text = "def hello(): return 'hi'"
         mock_resp.usage.total_tokens = 120
+        mock_resp.status = "completed"
+        mock_resp.incomplete_details = None
         mock_openai.OpenAI.return_value.responses.create.return_value = mock_resp
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2763,6 +2765,7 @@ class ExecutorPackageTests(unittest.TestCase):
                 result = CodexAdapter().execute(self._make_spec(), Path(tmp))
 
         self.assertTrue(result.success)
+        self.assertFalse(result.partial)
         self.assertIn("hello", result.output)
         self.assertEqual(result.tokens_used, 120)
 
@@ -3501,6 +3504,132 @@ class InvokeExecutorIntegrationTests(unittest.TestCase):
             self.assertEqual(len(runs), 1)
             self.assertEqual(runs[0]["run_id"], "run-abc")
             self.assertEqual(runs[0]["executor_used"], "claude_code")
+
+    # ------------------------------------------------------------------ adapter partial detection
+    def test_claude_code_adapter_partial_for_large_output(self):
+        """Output > max_iterations × 2000 chars marks partial=True (success unchanged)."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+        from app.executor.claude_code import ClaudeCodeAdapter
+        from app.executor.base import TaskSpec
+
+        adapter = ClaudeCodeAdapter()
+        spec = TaskSpec(objective="Do something", max_iterations=2)  # threshold = 4000 chars
+
+        fake_proc = MagicMock()
+        fake_proc.returncode = 0
+        fake_proc.stdout = "x" * 4001  # exceeds 2 × 2000
+        fake_proc.stderr = ""
+
+        with (
+            patch("app.executor.claude_code.subprocess.run", return_value=fake_proc),
+            patch.object(adapter, "_get_changed_files", return_value=[]),
+        ):
+            result = adapter.execute(spec, Path("/tmp"))
+
+        self.assertTrue(result.partial, "partial must be True when output exceeds threshold")
+        self.assertTrue(result.success, "success reflects returncode, not partial flag")
+
+    def test_claude_code_adapter_not_partial_for_small_output(self):
+        """Output within max_iterations × 2000 chars does not mark partial."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+        from app.executor.claude_code import ClaudeCodeAdapter
+        from app.executor.base import TaskSpec
+
+        adapter = ClaudeCodeAdapter()
+        spec = TaskSpec(objective="Small task", max_iterations=3)  # threshold = 6000 chars
+
+        fake_proc = MagicMock()
+        fake_proc.returncode = 0
+        fake_proc.stdout = "done"
+        fake_proc.stderr = ""
+
+        with (
+            patch("app.executor.claude_code.subprocess.run", return_value=fake_proc),
+            patch.object(adapter, "_get_changed_files", return_value=[]),
+        ):
+            result = adapter.execute(spec, Path("/tmp"))
+
+        self.assertFalse(result.partial)
+
+    def test_codex_adapter_partial_for_incomplete_status(self):
+        """Codex response with status='incomplete' returns partial=True and success=False."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+        from app.executor.codex import CodexAdapter
+        from app.executor.base import TaskSpec
+
+        adapter = CodexAdapter()
+        spec = TaskSpec(objective="Do something")
+
+        mock_response = MagicMock()
+        mock_response.output_text = "partial output..."
+        mock_response.status = "incomplete"
+        mock_response.incomplete_details = MagicMock()
+        mock_response.usage = None
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = mock_response
+
+        mock_openai_mod = MagicMock()
+        mock_openai_mod.OpenAI.return_value = mock_client
+
+        with patch.dict("sys.modules", {"openai": mock_openai_mod}):
+            result = adapter.execute(spec, Path("/tmp"))
+
+        self.assertTrue(result.partial, "partial must be True for incomplete Codex response")
+        self.assertFalse(result.success, "success must be False when response is incomplete")
+
+    def test_codex_adapter_not_partial_for_completed_status(self):
+        """Codex response with status='completed' and no incomplete_details is not partial."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+        from app.executor.codex import CodexAdapter
+        from app.executor.base import TaskSpec
+
+        adapter = CodexAdapter()
+        spec = TaskSpec(objective="Do something")
+
+        mock_response = MagicMock()
+        mock_response.output_text = "all done"
+        mock_response.status = "completed"
+        mock_response.incomplete_details = None
+        mock_response.usage = None
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = mock_response
+
+        mock_openai_mod = MagicMock()
+        mock_openai_mod.OpenAI.return_value = mock_client
+
+        with patch.dict("sys.modules", {"openai": mock_openai_mod}):
+            result = adapter.execute(spec, Path("/tmp"))
+
+        self.assertFalse(result.partial)
+        self.assertTrue(result.success)
+
+    def test_aider_adapter_partial_on_timeout(self):
+        """AiderAdapter subprocess timeout returns partial=True (max_duration_seconds is the
+        primary iteration-control mechanism since Aider has no native iteration limit flag)."""
+        from pathlib import Path
+        from unittest.mock import patch
+        import subprocess
+        from app.executor.aider import AiderAdapter
+        from app.executor.base import TaskSpec
+
+        adapter = AiderAdapter()
+        spec = TaskSpec(objective="Do something", max_duration_seconds=1)
+
+        with patch(
+            "app.executor.aider.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["aider"], timeout=1),
+        ):
+            result = adapter.execute(spec, Path("/tmp"))
+
+        self.assertTrue(result.partial, "partial must be True on aider timeout")
+        self.assertFalse(result.success)
+        self.assertIn("timed out", result.errors)
 
 
 if __name__ == "__main__":

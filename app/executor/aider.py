@@ -27,6 +27,9 @@ class AiderAdapter(CodeExecutorAdapter):
             return False
 
     def execute(self, task_spec: TaskSpec, workspace_path: Path) -> ExecutionResult:
+        # Aider has no CLI flag to limit iteration count. max_iterations from TaskSpec
+        # cannot be enforced natively; max_duration_seconds via subprocess timeout is
+        # the only hard bound available.
         try:
             cmd = ["aider", "--message", task_spec.objective, "--yes-always"]
             cmd.extend(task_spec.target_files)

@@ -24,6 +24,9 @@ class ClaudeCodeAdapter(CodeExecutorAdapter):
             return False
 
     def execute(self, task_spec: TaskSpec, workspace_path: Path) -> ExecutionResult:
+        # max_duration_seconds is the primary iteration-control mechanism for Claude Code:
+        # the CLI does not expose an iteration counter, so the subprocess timeout is the
+        # only hard bound. max_iterations is passed in the prompt for informational purposes.
         try:
             result = subprocess.run(
                 ["claude", "--print", "--no-interactive", task_spec.to_claude_prompt()],
@@ -32,15 +35,20 @@ class ClaudeCodeAdapter(CodeExecutorAdapter):
                 text=True,
                 timeout=task_spec.max_duration_seconds,
             )
+            output = result.stdout.strip()
             files_changed = self._get_changed_files(workspace_path)
+            # Heuristic: output longer than max_iterations × 2000 chars indicates many
+            # tool-call cycles occurred. Flag partial so callers can decide to continue.
+            partial = len(output) > task_spec.max_iterations * 2000
             return ExecutionResult(
                 success=result.returncode == 0,
                 files_changed=files_changed,
-                output=result.stdout.strip(),
+                output=output,
                 errors=result.stderr.strip(),
                 exit_code=result.returncode,
+                partial=partial,
             )
-        except subprocess.TimeoutExpired as exc:
+        except subprocess.TimeoutExpired:
             return ExecutionResult(
                 success=False,
                 errors=f"Claude Code timed out after {task_spec.max_duration_seconds}s.",
