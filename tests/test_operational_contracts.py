@@ -3276,5 +3276,232 @@ class InvokeExecutorIntegrationTests(unittest.TestCase):
                       "files_changed must appear in engineering_review prompt")
 
 
+    # ------------------------------------------------------------------ executor config
+    def test_config_executor_defaults(self):
+        """DEFAULT_EXECUTOR and related settings are exported from app.config."""
+        import app.config as cfg
+        self.assertEqual(cfg.DEFAULT_EXECUTOR, "claude_code")
+        self.assertIsInstance(cfg.CODEX_COST_PER_TOKEN, float)
+        self.assertGreater(cfg.CODEX_COST_PER_TOKEN, 0)
+        self.assertIsInstance(cfg.EXECUTOR_MAX_ITERATIONS, int)
+        self.assertGreater(cfg.EXECUTOR_MAX_ITERATIONS, 0)
+        self.assertIsInstance(cfg.EXECUTOR_MAX_DURATION_SECONDS, int)
+        self.assertGreater(cfg.EXECUTOR_MAX_DURATION_SECONDS, 0)
+
+    def test_select_adapter_promotes_default_executor_for_medium(self):
+        """DEFAULT_EXECUTOR is head of preference order for medium/low complexity."""
+        from unittest.mock import patch
+        from app.executor.registry import _build_order
+        import app.config as cfg
+
+        with patch.object(cfg, "DEFAULT_EXECUTOR", "aider"):
+            order = _build_order("medium")
+        self.assertEqual(order[0], "aider", "DEFAULT_EXECUTOR must head non-high order")
+
+    def test_select_adapter_high_complexity_ignores_default_executor(self):
+        """High complexity keeps the fixed order regardless of DEFAULT_EXECUTOR."""
+        from unittest.mock import patch
+        from app.executor.registry import _build_order
+        import app.config as cfg
+
+        with patch.object(cfg, "DEFAULT_EXECUTOR", "aider"):
+            order = _build_order("high")
+        self.assertEqual(order[0], "claude_code", "High complexity order is fixed")
+
+    # ------------------------------------------------------------------ executor_runs persistence
+    def test_invoke_executor_persists_executor_run(self):
+        """After invoke_executor, executor_runs_snapshot returns the recorded row."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch, MagicMock
+        from app.execution_engine import invoke_executor
+        from app.executor.base import ExecutionResult
+        from app.operational_store import executor_runs_snapshot, initialize_schema
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.sqlite3"
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+
+            fake_result = ExecutionResult(
+                success=True,
+                files_changed=["app/new_feature.py"],
+                output="done",
+                errors="",
+                exit_code=0,
+                tokens_used=42,
+            )
+            mock_adapter = MagicMock()
+            mock_adapter.name.return_value = "claude_code"
+            mock_adapter.execute.return_value = fake_result
+
+            task_spec_dict = {
+                "objective": "Add feature",
+                "complexity": "medium",
+            }
+
+            with patch("app.executor.registry.select_adapter", return_value=mock_adapter):
+                result, adapter_name = invoke_executor(
+                    task_spec_dict, workspace, {}, run_id="test-persist-123", db_path=db_path
+                )
+
+            self.assertTrue(result.success)
+            self.assertEqual(adapter_name, "claude_code")
+
+            snapshot = executor_runs_snapshot(run_id="test-persist-123", db_path=db_path)
+            runs = snapshot["executor_runs"]
+            self.assertEqual(len(runs), 1)
+            self.assertEqual(runs[0]["executor_used"], "claude_code")
+            self.assertTrue(runs[0]["success"])
+            self.assertIn("app/new_feature.py", runs[0]["files_changed"])
+            self.assertEqual(runs[0]["tokens_used"], 42)
+
+    def test_executor_runs_snapshot_all_runs_when_no_run_id(self):
+        """executor_runs_snapshot without run_id returns recent rows."""
+        import tempfile
+        from pathlib import Path
+        from app.operational_store import record_executor_run, executor_runs_snapshot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.sqlite3"
+            record_executor_run(run_id="r1", executor_used="codex", success=True, db_path=db_path)
+            record_executor_run(run_id="r2", executor_used="aider", success=False, db_path=db_path)
+            snapshot = executor_runs_snapshot(db_path=db_path)
+            self.assertEqual(len(snapshot["executor_runs"]), 2)
+
+    # ------------------------------------------------------------------ metrics executor_summary
+    def test_metrics_snapshot_includes_executor_summary(self):
+        """metrics_snapshot always contains executor_summary with aggregated fields."""
+        import tempfile
+        from pathlib import Path
+        from app.operational_store import record_executor_run, metrics_snapshot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.sqlite3"
+            record_executor_run(run_id="r1", executor_used="claude_code", success=True,
+                                tokens_used=100, db_path=db_path)
+            record_executor_run(run_id="r1", executor_used="claude_code", success=True,
+                                tokens_used=200, db_path=db_path)
+            record_executor_run(run_id="r2", executor_used="codex", success=False,
+                                tokens_used=50, db_path=db_path)
+
+            snap = metrics_snapshot(db_path=db_path)
+            ex = snap["executor_summary"]
+            self.assertEqual(ex["total_executions"], 3)
+            self.assertAlmostEqual(ex["success_rate"], round(2 / 3, 4))
+            self.assertEqual(ex["most_used_executor"], "claude_code")
+            self.assertEqual(ex["total_tokens_used"], 350)
+
+    def test_metrics_snapshot_executor_summary_empty(self):
+        """executor_summary is zeroed when no executor runs exist."""
+        import tempfile
+        from pathlib import Path
+        from app.operational_store import metrics_snapshot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.sqlite3"
+            snap = metrics_snapshot(db_path=db_path)
+            ex = snap["executor_summary"]
+            self.assertEqual(ex["total_executions"], 0)
+            self.assertEqual(ex["success_rate"], 0.0)
+            self.assertEqual(ex["most_used_executor"], "")
+            self.assertEqual(ex["total_tokens_used"], 0)
+
+    # ------------------------------------------------------------------ /api/executor/status
+    def test_executor_status_endpoint_returns_adapter_list(self):
+        """GET /api/executor/status returns adapters with name, available, estimated_cost_low_task."""
+        import io
+        from unittest.mock import patch, MagicMock
+        from http.server import BaseHTTPRequestHandler
+        from app.operational_api import OperationsHandler
+
+        mock_wfile = io.BytesIO()
+        response_lines: list[bytes] = []
+
+        class FakeSocket:
+            def makefile(self, mode, **kw):
+                return io.BufferedReader(io.BytesIO(b"GET /api/executor/status HTTP/1.0\r\n\r\n"))
+
+        class CapturingHandler(OperationsHandler):
+            def send_response(self, code, message=None):
+                response_lines.append(f"HTTP {code}".encode())
+
+            def send_header(self, key, value):
+                pass
+
+            def end_headers(self):
+                pass
+
+            def _json(self, payload, status=None):
+                response_lines.append(__import__("json").dumps(payload).encode())
+
+        mock_adapter_a = MagicMock()
+        mock_adapter_a.is_available.return_value = True
+        mock_adapter_a.estimated_cost.return_value = 0.001
+
+        mock_adapter_b = MagicMock()
+        mock_adapter_b.is_available.return_value = False
+        mock_adapter_b.estimated_cost.return_value = None
+
+        fake_registry = {"alpha": mock_adapter_a, "beta": mock_adapter_b}
+
+        with patch("app.executor.registry.REGISTRY", fake_registry):
+            handler = CapturingHandler.__new__(CapturingHandler)
+            handler.path = "/api/executor/status"
+            handler.db_path = __import__("pathlib").Path(":memory:")
+            handler.do_GET()
+
+        self.assertTrue(response_lines, "No response captured")
+        body = response_lines[-1].decode()
+        data = __import__("json").loads(body)
+        self.assertIn("adapters", data)
+        names = [a["name"] for a in data["adapters"]]
+        self.assertIn("alpha", names)
+        self.assertIn("beta", names)
+        alpha = next(a for a in data["adapters"] if a["name"] == "alpha")
+        self.assertTrue(alpha["available"])
+        self.assertAlmostEqual(alpha["estimated_cost_low_task"], 0.001)
+        beta = next(a for a in data["adapters"] if a["name"] == "beta")
+        self.assertFalse(beta["available"])
+
+    # ------------------------------------------------------------------ /api/executor/runs
+    def test_executor_runs_endpoint_filters_by_run_id(self):
+        """GET /api/executor/runs?run_id=X returns only that run's records."""
+        import tempfile
+        import io
+        import json
+        from pathlib import Path
+        from unittest.mock import patch
+        from app.operational_api import OperationsHandler
+        from app.operational_store import record_executor_run
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.sqlite3"
+            record_executor_run(run_id="run-abc", executor_used="claude_code", success=True,
+                                db_path=db_path)
+            record_executor_run(run_id="run-xyz", executor_used="codex", success=False,
+                                db_path=db_path)
+
+            captured: list[dict] = []
+
+            class CapturingHandler(OperationsHandler):
+                def send_response(self, code, message=None): pass
+                def send_header(self, key, value): pass
+                def end_headers(self): pass
+                def _json(self, payload, status=None):
+                    captured.append(payload)
+
+            handler = CapturingHandler.__new__(CapturingHandler)
+            handler.path = "/api/executor/runs?run_id=run-abc"
+            handler.db_path = db_path
+            handler.do_GET()
+
+            self.assertTrue(captured)
+            runs = captured[0]["executor_runs"]
+            self.assertEqual(len(runs), 1)
+            self.assertEqual(runs[0]["run_id"], "run-abc")
+            self.assertEqual(runs[0]["executor_used"], "claude_code")
+
+
 if __name__ == "__main__":
     unittest.main()

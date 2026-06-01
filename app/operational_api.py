@@ -29,6 +29,7 @@ from app.operational_store import (
     cost_snapshot,
     create_parking_lot_item,
     execution_request_snapshot,
+    executor_runs_snapshot,
     human_decision_snapshot,
     metrics_snapshot,
     performance_history_snapshot,
@@ -157,6 +158,24 @@ class OperationsHandler(SimpleHTTPRequestHandler):
                     "decision_log": read_scoped_or_seed("decision_log.md", namespace)[-6000:],
                 }
             )
+            return
+        if path == "/api/executor/status":
+            from app.executor.registry import get_registry
+            from app.executor.base import TaskSpec
+            registry = get_registry()
+            adapters = []
+            for name, adapter in registry.items():
+                low_spec = TaskSpec(objective="probe", complexity="low")
+                adapters.append({
+                    "name": name,
+                    "available": adapter.is_available(),
+                    "estimated_cost_low_task": adapter.estimated_cost(low_spec),
+                })
+            self._json({"adapters": adapters})
+            return
+        if path == "/api/executor/runs":
+            run_id = parse_qs(urlparse(self.path).query).get("run_id", [""])[0][:120]
+            self._json(executor_runs_snapshot(run_id=run_id or None, db_path=self.db_path))
             return
         parts = [unquote(part) for part in path.split("/") if part]
         if len(parts) == 3 and parts[:2] == ["api", "requests"]:

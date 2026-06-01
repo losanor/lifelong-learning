@@ -13,6 +13,7 @@ from typing import Any
 from app.operational_store import (
     DEFAULT_DB_PATH,
     execution_request_snapshot,
+    record_executor_run,
     record_handoff_event,
     record_human_decision,
     record_apply_decision,
@@ -1384,6 +1385,18 @@ def _record_executor_checkpoint(
     result: Any,
     db_path: str | Path,
 ) -> None:
+    try:
+        record_executor_run(
+            run_id=run_id,
+            executor_used=adapter_name,
+            success=result.success,
+            files_changed=result.files_changed or [],
+            tokens_used=result.tokens_used,
+            partial=getattr(result, "partial", False),
+            db_path=db_path,
+        )
+    except Exception:
+        pass
     if not run_id:
         return
     try:

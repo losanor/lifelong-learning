@@ -279,6 +279,21 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 ON human_decisions(status, updated_at);
             CREATE INDEX IF NOT EXISTS idx_parking_lot_status
                 ON parking_lot_items(status, updated_at);
+
+            CREATE TABLE IF NOT EXISTS executor_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL DEFAULT '',
+                agent_name TEXT NOT NULL DEFAULT '',
+                executor_used TEXT NOT NULL DEFAULT '',
+                success INTEGER NOT NULL DEFAULT 0,
+                files_changed_json TEXT NOT NULL DEFAULT '[]',
+                tokens_used INTEGER,
+                partial INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_executor_runs_run_id
+                ON executor_runs(run_id, id);
             """
         )
         baseline_columns = {
@@ -2307,6 +2322,84 @@ def update_human_review(
             raise ValueError("Baseline scenario not found for human review.")
 
 
+def record_executor_run(
+    *,
+    run_id: str = "",
+    agent_name: str = "",
+    executor_used: str,
+    success: bool,
+    files_changed: list[str] | None = None,
+    tokens_used: int | None = None,
+    partial: bool = False,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> None:
+    initialize_schema(db_path)
+    now = datetime.now(timezone.utc).isoformat()
+    with _connection(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO executor_runs
+                (run_id, agent_name, executor_used, success, files_changed_json,
+                 tokens_used, partial, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                agent_name,
+                executor_used,
+                1 if success else 0,
+                json.dumps(files_changed or []),
+                tokens_used,
+                1 if partial else 0,
+                now,
+            ),
+        )
+
+
+def executor_runs_snapshot(
+    run_id: str | None = None,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        if run_id:
+            rows = connection.execute(
+                """
+                SELECT id, run_id, agent_name, executor_used, success,
+                       files_changed_json, tokens_used, partial, created_at
+                FROM executor_runs
+                WHERE run_id = ?
+                ORDER BY id ASC
+                """,
+                (run_id,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT id, run_id, agent_name, executor_used, success,
+                       files_changed_json, tokens_used, partial, created_at
+                FROM executor_runs
+                ORDER BY id DESC LIMIT 200
+                """
+            ).fetchall()
+    return {
+        "executor_runs": [
+            {
+                "id": row["id"],
+                "run_id": row["run_id"],
+                "agent_name": row["agent_name"],
+                "executor_used": row["executor_used"],
+                "success": bool(row["success"]),
+                "files_changed": json.loads(row["files_changed_json"]),
+                "tokens_used": row["tokens_used"],
+                "partial": bool(row["partial"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+    }
+
+
 def metrics_snapshot(
     db_path: str | Path = DEFAULT_DB_PATH,
     *,
@@ -2366,8 +2459,29 @@ def metrics_snapshot(
             ORDER BY repair_count DESC, ao.agent_name ASC
             """
         ).fetchall()
+        executor_totals = connection.execute(
+            """
+            SELECT
+                COUNT(*) AS total_executions,
+                COALESCE(SUM(success), 0) AS success_count,
+                COALESCE(SUM(tokens_used), 0) AS total_tokens_used
+            FROM executor_runs
+            """
+        ).fetchone()
+        executor_top_row = connection.execute(
+            """
+            SELECT executor_used, COUNT(*) AS cnt
+            FROM executor_runs
+            WHERE executor_used != ''
+            GROUP BY executor_used
+            ORDER BY cnt DESC
+            LIMIT 1
+            """
+        ).fetchone()
 
     run_count = totals["run_count"]
+    exec_total = executor_totals["total_executions"] or 0
+    most_used_executor = executor_top_row["executor_used"] if executor_top_row else ""
     return {
         "run_count": run_count,
         "average_agents_per_run": round(totals["average_agents_per_run"], 2),
@@ -2407,6 +2521,12 @@ def metrics_snapshot(
             }
             for row in repair_rows
         ],
+        "executor_summary": {
+            "total_executions": exec_total,
+            "success_rate": round(executor_totals["success_count"] / exec_total, 4) if exec_total else 0.0,
+            "most_used_executor": most_used_executor,
+            "total_tokens_used": executor_totals["total_tokens_used"] or 0,
+        },
     }
 
 

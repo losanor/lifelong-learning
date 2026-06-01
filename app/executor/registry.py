@@ -25,11 +25,29 @@ def get_registry() -> dict[str, CodeExecutorAdapter]:
     return REGISTRY
 
 
+def _default_executor() -> str:
+    import app.config as _cfg
+    return _cfg.DEFAULT_EXECUTOR
+
+
+def _build_order(complexity: str) -> list[str]:
+    """Return adapter preference order, promoting DEFAULT_EXECUTOR for non-high tasks."""
+    base = _COMPLEXITY_ORDER.get(complexity, _COMPLEXITY_ORDER["medium"])
+    if complexity == "high":
+        return base
+    default = _default_executor()
+    if default in base and base[0] != default:
+        reordered = [default] + [n for n in base if n != default]
+        return reordered
+    return base
+
+
 def select_adapter(task_spec: TaskSpec, policy: dict) -> CodeExecutorAdapter:
     """
     Selection priority:
     1. preferred_executor if available in registry and is_available().
-    2. Adapters ordered by complexity preset, filtered by budget.
+    2. Adapters ordered by complexity preset (DEFAULT_EXECUTOR heads non-high tasks),
+       filtered by budget.
     3. RuntimeError if none qualify.
     """
     budget = policy.get("budget_remaining_usd", policy.get("max_cost_usd"))
@@ -39,7 +57,7 @@ def select_adapter(task_spec: TaskSpec, policy: dict) -> CodeExecutorAdapter:
         if preferred is not None and preferred.is_available():
             return preferred
 
-    order = _COMPLEXITY_ORDER.get(task_spec.complexity, _COMPLEXITY_ORDER["medium"])
+    order = _build_order(task_spec.complexity)
     for adapter_name in order:
         adapter = REGISTRY.get(adapter_name)
         if adapter is None or not adapter.is_available():
