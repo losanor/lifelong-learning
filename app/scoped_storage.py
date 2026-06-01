@@ -27,5 +27,9 @@ def read_scoped_or_seed(filename: str, memory_namespace: str = "") -> str:
     path = scoped_path(filename, memory_namespace)
     if path.exists():
         return path.read_text(encoding="utf-8")
+    if memory_namespace:
+        # Scoped namespaces never inherit the default data/ seed to avoid
+        # cross-project contamination from old runs stored in those files.
+        return ""
     seed = DATA_DIR / filename
     return seed.read_text(encoding="utf-8") if seed.exists() else ""

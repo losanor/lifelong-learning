@@ -30,11 +30,10 @@ def read_compact_memory(memory_namespace: str = "") -> str:
 
 def generate_manual_compaction(memory_namespace: str = "") -> str:
     """
-    Gera uma compactação simples, determinística e sem chamada de LLM.
+    Gera uma compactação determinística sem chamada de LLM.
 
-    Esta versão não resume semanticamente com IA.
-    Ela cria um contexto operacional compacto baseado nos arquivos existentes,
-    pegando trechos finais dos logs e mantendo decisões/bloqueios principais.
+    Todas as seções derivam exclusivamente dos logs reais (shared_memory,
+    decision_log, handoff_log). Nenhum literal de projeto é embutido aqui.
     """
 
     shared_memory = read_scoped_or_seed("shared_memory.md", memory_namespace)
@@ -43,11 +42,12 @@ def generate_manual_compaction(memory_namespace: str = "") -> str:
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    def _tail(text: str, n: int) -> str:
+        return text[-n:].strip() if text and text.strip() else "sem dados ainda"
+
     compact = f"""# Compact Memory — Squad v5 Lite
 
 Última compactação: {timestamp}
-
-Este arquivo contém o contexto operacional compacto da squad.
 
 Use este arquivo como contexto prioritário para reduzir custo de tokens, latência e ruído.
 
@@ -55,75 +55,47 @@ Use este arquivo como contexto prioritário para reduzir custo de tokens, latên
 
 ## 1. Estado Atual
 
-A Squad v5 Lite possui fluxo funcional:
-
-Discovery → Product → QA Planning → Engineering Lead → Implementation Operator → Engineering Review → QA Execution
-
-Componentes ativos:
-- Shared Memory
-- Decision Log
-- Handoff Log
-- Modo Mock
-- QA Gate
+{_tail(shared_memory, 1200)}
 
 ---
 
-## 2. Decisões Ativas
+## 2. Decisões e Bloqueios Registrados
 
-- D-001: Tarefa concluída permanece visível com texto riscado e pode ser desmarcada.
-- D-002: MVP Sujo usa `localStorage`, sem backend, autenticação ou banco remoto.
-- D-003: Tracking mínimo usa `analytics` com `first_visit_at`, `last_visit_at`, `visit_count` e `visit_dates`.
-- D-004: Interface em português.
-- D-005: MVP Sujo aprovado para experimento com usuários.
+{_tail(decision_log, 1500)}
 
 ---
 
-## 3. Bloqueios Ativos
+## 3. Último Ciclo Conhecido
 
-- B-001: Engineering completa não aprovada.
-- B-002: Critérios do experimento com usuários ainda precisam ser definidos.
-
----
-
-## 4. Último Ciclo Conhecido
-
-MVP Sujo de tarefas pessoais:
-- Implementado via Claude Code.
-- Validado manualmente.
-- QA Execution aprovou para experimento com usuários.
-- Engineering completa permanece bloqueada.
+{_tail(handoff_log, 1000)}
 
 ---
 
-## 5. Sinais Recentes do Handoff Log
+## 4. Sinais Recentes do Handoff Log
 
-{handoff_log[-3000:] if handoff_log else "Nenhum handoff registrado ainda."}
-
----
-
-## 6. Contexto Recente da Shared Memory
-
-{shared_memory[-3000:] if shared_memory else "Shared Memory vazia ou não encontrada."}
+{handoff_log[-3000:].strip() if handoff_log and handoff_log.strip() else "sem dados ainda"}
 
 ---
 
-## 7. Contexto Recente do Decision Log
+## 5. Contexto Recente da Shared Memory
 
-{decision_log[-3000:] if decision_log else "Decision Log vazio ou não encontrado."}
-
----
-
-## 8. Próximo Passo Recomendado
-
-Fechar B-002 antes de expor o MVP a usuários reais:
-- número de usuários;
-- duração;
-- critério mínimo de sucesso;
-- forma de coleta dos dados.
+{shared_memory[-3000:].strip() if shared_memory and shared_memory.strip() else "sem dados ainda"}
 
 ---
 
-## 9. Regra de Uso
+## 6. Contexto Recente do Decision Log
+
+{decision_log[-3000:].strip() if decision_log and decision_log.strip() else "sem dados ainda"}
+
+---
+
+## 7. Próximo Passo Recomendado
+
+{_tail(shared_memory, 600)}
+
+---
+
+## 8. Regra de Uso
 
 Este arquivo deve ser usado como contexto operacional prioritário.
 

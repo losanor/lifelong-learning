@@ -40,6 +40,10 @@ class SquadState(TypedDict, total=False):
     privacy_output: str
     appsec_output: str
     cos_output: str
+    cos_intake_output: str
+    cos_intake_target: str
+    cos_intake_mode: str
+    cos_intake_rationale: str
 
     cos_decision: str
     cos_route_action: str
@@ -73,3 +77,4 @@ class SquadState(TypedDict, total=False):
     escalations: list[str]
 
     needs_discovery: bool
+    budget_exceeded: bool
