@@ -37,6 +37,8 @@ from app.human_escalation import (
     build_escalation_reason,
     build_required_decision,
 )
+from app.execution_engine import invoke_executor
+from app.operational_store import DEFAULT_DB_PATH
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -410,6 +412,49 @@ def next_after_check(state: SquadState, agent_name: str, next_node: str) -> str:
     if check.get("needs_cos_attention", False):
         return "cos"
     return next_node
+
+
+def _build_task_spec_dict(artifact: Any, state: SquadState) -> dict:
+    """Build a TaskSpec-compatible dict from an operational_artifact envelope."""
+    engineering = state.get("engineering_output", "")
+    active_flow = state.get("active_flow", "delivery_core")
+    complexity = "high" if active_flow in {"delivery_core", "delivery_with_discovery"} else "medium"
+    objective = (
+        artifact.recommended_actions[0]
+        if artifact.recommended_actions
+        else state["user_goal"]
+    )
+    constraints = [f"Engineering spec: {engineering[:400]}"] if engineering else []
+    return {
+        "objective": objective,
+        "target_files": list(artifact.target_refs),
+        "acceptance_criteria": list(artifact.verification_steps),
+        "validation_commands": list(artifact.verification_steps),
+        "constraints": constraints,
+        "complexity": complexity,
+    }
+
+
+def _execution_result_context(state: SquadState) -> str:
+    """Inject executor evidence into agent prompts when available."""
+    result = state.get("execution_result")
+    if not result:
+        return ""
+    executor = state.get("executor_used") or "unknown"
+    success = result.get("success", False)
+    files = ", ".join(result.get("files_changed", [])) or "(none)"
+    output = (result.get("output") or "")[:1000]
+    errors = (result.get("errors") or "")[:400]
+    lines = [
+        f"\n## Executor Result ({executor})",
+        f"Status: {'success' if success else 'failed'}",
+        f"Files changed: {files}",
+    ]
+    if output:
+        lines.append(f"Output:\n{output}")
+    if errors:
+        lines.append(f"Errors:\n{errors}")
+    return "\n".join(lines) + "\n\n"
 
 
 def intake_node(state: SquadState):
@@ -1008,6 +1053,53 @@ def operator_node(state: SquadState):
         f"AppSec Gate:\n{appsec}"
     )
 
+    # Try executor if artifact is execution_ready and workspace_root is available
+    execution_result_dict: dict | None = None
+    executor_used = ""
+    task_spec_dict: dict | None = None
+    workspace_root = state.get("workspace_root", "")
+    artifact = response.envelope.operational_artifact
+
+    if artifact.execution_ready and workspace_root:
+        task_spec_dict = _build_task_spec_dict(artifact, state)
+        try:
+            exec_result, executor_used = invoke_executor(
+                task_spec_dict,
+                workspace_root,
+                state.get("execution_policy", {}),
+                run_id=run_id,
+                db_path=state.get("operational_db_path") or DEFAULT_DB_PATH,
+            )
+            execution_result_dict = {
+                "success": exec_result.success,
+                "files_changed": exec_result.files_changed,
+                "output": exec_result.output,
+                "errors": exec_result.errors,
+                "exit_code": exec_result.exit_code,
+                "tokens_used": exec_result.tokens_used,
+                "iterations": exec_result.iterations,
+                "partial": exec_result.partial,
+            }
+        except Exception as exc:
+            execution_result_dict = {"success": False, "errors": str(exc), "partial": True,
+                                     "files_changed": [], "output": "", "exit_code": -1,
+                                     "tokens_used": None, "iterations": None}
+
+    # Enrich operator_output with executor evidence when available
+    enriched_output = response.content
+    if execution_result_dict is not None:
+        exec_label = executor_used or "n/a"
+        status_str = "success" if execution_result_dict.get("success") else "failed"
+        files_str = ", ".join(execution_result_dict.get("files_changed") or []) or "(none)"
+        out_str = (execution_result_dict.get("output") or "")[:300]
+        enriched_output = (
+            f"{response.content}\n\n"
+            f"## Executor Result ({exec_label})\n"
+            f"Status: {status_str}\n"
+            f"Files changed: {files_str}\n"
+            f"Output: {out_str}\n"
+        )
+
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
@@ -1015,7 +1107,7 @@ def operator_node(state: SquadState):
         from_agent="Implementation Operator",
         to_agent="Engineering Review",
         artifact="Implementation Package",
-        summary=response.content[:500],
+        summary=enriched_output[:500],
         ece="C2",
         blockers="Sem bloqueios identificados neste ciclo.",
         next_step="Engineering Lead deve revisar aderencia antes do QA Execution.",
@@ -1023,14 +1115,17 @@ def operator_node(state: SquadState):
     )
 
     return with_orchestrator_check(state, "operator", response, {
-        "operator_output": response.content,
+        "operator_output": enriched_output,
+        "task_spec": task_spec_dict,
+        "execution_result": execution_result_dict,
+        "executor_used": executor_used,
         "confidence_by_agent": {
             **state.get("confidence_by_agent", {}),
             "operator": "C2"
         },
         "summaries_by_agent": {
             **state.get("summaries_by_agent", {}),
-            "operator": response.content[:300]
+            "operator": enriched_output[:300]
         }
     })
 
@@ -1056,12 +1151,14 @@ def engineering_review_node(state: SquadState):
         "Engineering Review com parecer, riscos, ECE e resumo.",
     )
 
+    exec_context = _execution_result_context(state)
     response = invoke_validated("engineering_review",
         f"[[AGENT:ENGINEERING_REVIEW]]\n\n"
         f"{prompt}\n\n"
         f"{cmo}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
         f"{workspace_context_block(state, 'engineering_review')}"
+        f"{exec_context}"
         f"Product Brief:\n{product}\n\n"
         f"QA Planning:\n{qa_plan}\n\n"
         f"Engineering Specification:\n{engineering}\n\n"
@@ -1116,6 +1213,7 @@ def qa_execution_node(state: SquadState):
         "Relatorio QA com EME, bugs, go/no-go, ECE e resumo.",
     )
 
+    exec_context = _execution_result_context(state)
     response = invoke_validated("qa_execution",
         f"[[AGENT:QA_EXECUTION]]\n\n"
         f"{prompt}\n\n"
@@ -1123,6 +1221,7 @@ def qa_execution_node(state: SquadState):
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
         f"{workspace_context_block(state, 'qa_execution')}"
         f"{agent_context}"
+        f"{exec_context}"
         f"QA Planning:\n{qa_plan}\n\n"
         f"Engineering Specification:\n{engineering}\n\n"
         f"Implementation Operator Package:\n{operator}\n\n"

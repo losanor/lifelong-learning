@@ -80,3 +80,7 @@ class SquadState(TypedDict, total=False):
     needs_discovery: bool
     budget_exceeded: bool
     cache_metrics: dict[str, dict]
+
+    task_spec: dict | None
+    execution_result: dict | None
+    executor_used: str

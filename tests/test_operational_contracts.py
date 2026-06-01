@@ -2984,5 +2984,297 @@ class ExecutorPackageTests(unittest.TestCase):
         self.assertIn("fake", result["executor_adapters"]["available"])
 
 
+class InvokeExecutorIntegrationTests(unittest.TestCase):
+    """Tests for invoke_executor in execution_engine and its graph integration."""
+
+    def _make_spec_dict(self, **kwargs) -> dict:
+        base = {
+            "objective": "Implement feature X",
+            "target_files": ["app/feature.py"],
+            "complexity": "medium",
+            "validation_commands": [],
+        }
+        base.update(kwargs)
+        return base
+
+    # ------------------------------------------------------------------ invoke_executor
+    def test_invoke_executor_success_returns_result_and_adapter_name(self):
+        from app.execution_engine import invoke_executor
+        from app.executor.base import ExecutionResult
+        from unittest.mock import patch, MagicMock
+        import tempfile
+
+        mock_adapter = MagicMock()
+        mock_adapter.name.return_value = "claude_code"
+        mock_adapter.is_available.return_value = True
+        mock_adapter.estimated_cost.return_value = None
+        mock_adapter.execute.return_value = ExecutionResult(
+            success=True, files_changed=["app/feature.py"], output="done"
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("app.executor.registry.select_adapter", return_value=mock_adapter):
+                result, adapter_name = invoke_executor(
+                    self._make_spec_dict(), tmp, {}
+                )
+
+        self.assertTrue(result.success)
+        self.assertEqual(adapter_name, "claude_code")
+        self.assertIn("app/feature.py", result.files_changed)
+
+    def test_invoke_executor_no_adapter_available_returns_failure(self):
+        from app.execution_engine import invoke_executor
+        from unittest.mock import patch
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch(
+                "app.executor.registry.select_adapter",
+                side_effect=RuntimeError("No code executor adapter is available"),
+            ):
+                result, adapter_name = invoke_executor(
+                    self._make_spec_dict(), tmp, {}
+                )
+
+        self.assertFalse(result.success)
+        self.assertEqual(adapter_name, "")
+        self.assertIn("No code executor adapter", result.errors)
+
+    def test_invoke_executor_validation_failure_triggers_rollback(self):
+        """When a validation command fails, git checkout -- . must be called."""
+        from app.execution_engine import invoke_executor, _run_command
+        from app.executor.base import ExecutionResult
+        from unittest.mock import patch, MagicMock, call
+        import tempfile
+
+        mock_adapter = MagicMock()
+        mock_adapter.name.return_value = "aider"
+        mock_adapter.is_available.return_value = True
+        mock_adapter.estimated_cost.return_value = 0.0
+        mock_adapter.execute.return_value = ExecutionResult(
+            success=True, files_changed=["app/feature.py"]
+        )
+
+        rollback_calls = []
+
+        def fake_run_command(cmd, *, workspace_root, timeout=120):
+            if cmd[0:2] == ["git", "checkout"]:
+                rollback_calls.append(cmd)
+                return {"command": cmd, "passed": True, "return_code": 0, "output": ""}
+            # validation command fails
+            return {"command": cmd, "passed": False, "return_code": 1, "output": "test failed"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch("app.executor.registry.select_adapter", return_value=mock_adapter),
+                patch("app.execution_engine._run_command", side_effect=fake_run_command),
+            ):
+                spec = self._make_spec_dict(validation_commands=["pytest tests/"])
+                result, _ = invoke_executor(spec, tmp, {})
+
+        self.assertFalse(result.success)
+        self.assertTrue(any("git" in str(c) and "checkout" in str(c) for c in rollback_calls),
+                        f"git checkout not called; calls were: {rollback_calls}")
+        self.assertIn("pytest tests/", result.errors)
+
+    def test_invoke_executor_invalid_spec_dict_returns_failure(self):
+        from app.execution_engine import invoke_executor
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Missing required 'objective' field
+            result, adapter_name = invoke_executor({}, tmp, {})
+
+        self.assertFalse(result.success)
+        self.assertIn("Invalid task spec", result.errors)
+
+    # ------------------------------------------------------------------ operator_node with executor
+    def test_operator_node_execution_ready_sets_execution_result_in_state(self):
+        """execution_ready=True + workspace_root → execution_result in returned state."""
+        import tempfile
+        from app.graph import operator_node
+        from app.executor.base import ExecutionResult
+        from unittest.mock import patch, MagicMock
+
+        mock_exec_result = ExecutionResult(
+            success=True, files_changed=["app/feature.py"], output="implemented"
+        )
+
+        state = {
+            "run_id": "test-exec-001",
+            "user_goal": "Implement feature X",
+            "active_flow": "delivery_core",
+            "memory_namespace": "test",
+            "fixed_agents": ["operator"],
+            "on_demand_agents": [],
+            "execution_policy": {"execution_tier": "full", "max_cost_usd": 0.60},
+            "confidence_by_agent": {},
+            "summaries_by_agent": {},
+            "orchestrator_checks": {},
+            "structured_outputs": {},
+            "raw_model_outputs": {},
+            "cache_metrics": {},
+            "workspace_root": "/tmp/workspace",
+        }
+
+        with (
+            patch("app.graph.USE_MOCK_MODEL", True),
+            patch("app.graph._resolve_model", return_value=__import__("app.mock_model", fromlist=["MockModel"]).MockModel()),
+            patch("app.graph.invoke_executor", return_value=(mock_exec_result, "claude_code")),
+        ):
+            result = operator_node(state)
+
+        self.assertIn("execution_result", result, "execution_result must be in operator_node output")
+        exec_res = result["execution_result"]
+        self.assertIsNotNone(exec_res)
+        self.assertTrue(exec_res["success"])
+        self.assertEqual(result.get("executor_used"), "claude_code")
+        self.assertIn("Executor Result", result.get("operator_output", ""))
+
+    def test_operator_node_no_adapters_flow_continues(self):
+        """When invoke_executor returns failure, operator_node completes normally."""
+        import tempfile
+        from app.graph import operator_node
+        from app.executor.base import ExecutionResult
+        from unittest.mock import patch
+
+        failed_result = ExecutionResult(
+            success=False, errors="No code executor adapter is available", partial=False
+        )
+
+        state = {
+            "run_id": "test-exec-002",
+            "user_goal": "Implement feature Y",
+            "active_flow": "delivery_core",
+            "memory_namespace": "test",
+            "fixed_agents": ["operator"],
+            "on_demand_agents": [],
+            "execution_policy": {"execution_tier": "full", "max_cost_usd": 0.60},
+            "confidence_by_agent": {},
+            "summaries_by_agent": {},
+            "orchestrator_checks": {},
+            "structured_outputs": {},
+            "raw_model_outputs": {},
+            "cache_metrics": {},
+            "workspace_root": "/tmp/workspace",
+        }
+
+        with (
+            patch("app.graph.USE_MOCK_MODEL", True),
+            patch("app.graph._resolve_model", return_value=__import__("app.mock_model", fromlist=["MockModel"]).MockModel()),
+            patch("app.graph.invoke_executor", return_value=(failed_result, "")),
+        ):
+            result = operator_node(state)
+
+        # Flow must complete — operator_output must be set
+        self.assertIn("operator_output", result)
+        self.assertTrue(result["operator_output"])
+        # execution_result is present and records the failure
+        self.assertIsNotNone(result.get("execution_result"))
+        self.assertFalse(result["execution_result"]["success"])
+
+    def test_operator_node_no_workspace_root_skips_executor(self):
+        """When workspace_root is absent, executor is not called."""
+        from app.graph import operator_node
+        from unittest.mock import patch, MagicMock
+
+        state = {
+            "run_id": "test-exec-003",
+            "user_goal": "Implement feature Z",
+            "active_flow": "delivery_core",
+            "memory_namespace": "test",
+            "fixed_agents": ["operator"],
+            "on_demand_agents": [],
+            "execution_policy": {"execution_tier": "full", "max_cost_usd": 0.60},
+            "confidence_by_agent": {},
+            "summaries_by_agent": {},
+            "orchestrator_checks": {},
+            "structured_outputs": {},
+            "raw_model_outputs": {},
+            "cache_metrics": {},
+            # workspace_root intentionally absent
+        }
+
+        mock_invoke_executor = MagicMock()
+
+        with (
+            patch("app.graph.USE_MOCK_MODEL", True),
+            patch("app.graph._resolve_model", return_value=__import__("app.mock_model", fromlist=["MockModel"]).MockModel()),
+            patch("app.graph.invoke_executor", mock_invoke_executor),
+        ):
+            result = operator_node(state)
+
+        mock_invoke_executor.assert_not_called()
+        # execution_result should be None (skipped)
+        self.assertIsNone(result.get("execution_result"))
+
+    # ------------------------------------------------------------------ engineering_review context
+    def test_engineering_review_receives_execution_result_in_prompt(self):
+        """When execution_result is in state, engineering_review prompt contains executor evidence."""
+        from app.graph import engineering_review_node
+        from unittest.mock import patch, MagicMock
+
+        captured_prompts = []
+
+        def fake_invoke_validated(agent_name, prompt):
+            captured_prompts.append((agent_name, prompt))
+            from app.mock_model import MockModel
+            return __import__("app.graph", fromlist=["invoke_validated"]).__dict__
+
+        state = {
+            "run_id": "test-review-exec",
+            "user_goal": "Implement feature",
+            "active_flow": "delivery_core",
+            "memory_namespace": "test",
+            "fixed_agents": ["engineering_review"],
+            "on_demand_agents": [],
+            "execution_policy": {"execution_tier": "full"},
+            "confidence_by_agent": {},
+            "summaries_by_agent": {},
+            "orchestrator_checks": {},
+            "structured_outputs": {},
+            "raw_model_outputs": {},
+            "cache_metrics": {},
+            "execution_result": {
+                "success": True,
+                "files_changed": ["app/feature.py", "tests/test_feature.py"],
+                "output": "All changes applied successfully.",
+                "errors": "",
+                "exit_code": 0,
+                "tokens_used": None,
+                "iterations": None,
+                "partial": False,
+            },
+            "executor_used": "claude_code",
+        }
+
+        captured = []
+
+        def fake_invoke_validated(agent_name, prompt):
+            captured.append(prompt)
+            from app.mock_model import MockModel
+            m = MockModel()
+            from app.structured_output import safe_parse_agent_output
+            from app.graph import ValidatedResponse, with_output_contract
+            raw = m.invoke(with_output_contract(prompt, agent_name)).content
+            envelope, errors = safe_parse_agent_output(raw, agent_name)
+            return ValidatedResponse(raw, envelope, errors)
+
+        with (
+            patch("app.graph.USE_MOCK_MODEL", True),
+            patch("app.graph.invoke_validated", side_effect=fake_invoke_validated),
+        ):
+            result = engineering_review_node(state)
+
+        self.assertTrue(captured, "invoke_validated was not called")
+        prompt_text = captured[0]
+        self.assertIn("Executor Result", prompt_text,
+                      "Executor Result block must appear in engineering_review prompt")
+        self.assertIn("claude_code", prompt_text,
+                      "executor_used must appear in engineering_review prompt")
+        self.assertIn("app/feature.py", prompt_text,
+                      "files_changed must appear in engineering_review prompt")
+
+
 if __name__ == "__main__":
     unittest.main()
