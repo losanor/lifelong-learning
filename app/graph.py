@@ -60,7 +60,7 @@ _HAIKU_AGENTS = {
     "ux_ui", "privacy", "appsec", "cos_intake",
 }
 _SONNET_AGENTS = {
-    "product", "engineering", "engineering_review", "qa_execution", "cos",
+    "vision", "product", "engineering", "engineering_review", "qa_execution", "cos",
 }
 
 MODEL_BY_AGENT: dict = {}
@@ -104,6 +104,7 @@ def _resolve_model(agent_name: str):
 # ---------------------------------------------------------------------------
 
 _AGENT_PROMPT_FILE: dict[str, str] = {
+    "vision": "vision.txt",
     "discovery": "discovery.txt",
     "product": "product.txt",
     "qa_planning": "qa.txt",
@@ -434,8 +435,10 @@ def intake_node(state: SquadState):
 
 
 def route_after_intake(state: SquadState) -> str:
+    """First operational agent after cos_intake (not counting vision which runs before)."""
     active_flow = state.get("active_flow", "delivery_core")
     first_node_by_flow = {
+        "ideation": "cos",
         "delivery_core": "product",
         "delivery_with_discovery": "discovery",
         "bugfix": "engineering",
@@ -447,18 +450,27 @@ def route_after_intake(state: SquadState) -> str:
     return first_node_by_flow.get(active_flow, "product")
 
 
+def _route_after_intake_node(state: SquadState) -> str:
+    """Conditional edge: intake → vision (ideation) or cos_intake (all other flows)."""
+    if state.get("active_flow") == "ideation":
+        return "vision"
+    return "cos_intake"
+
+
 def _agent_display_name(agent_name: str) -> str:
     names = {
+        "vision": "Vision Agent",
         "discovery": "Discovery",
         "product": "Product Lead",
         "engineering": "Engineering Lead",
         "engineering_review": "Engineering Review",
         "writing": "Writing / Documentation",
+        "cos": "CoS / Orchestrator",
     }
     return names.get(agent_name, agent_name)
 
 
-INITIAL_TARGETS = {"discovery", "product", "engineering", "engineering_review", "writing"}
+INITIAL_TARGETS = {"discovery", "product", "engineering", "engineering_review", "writing", "cos"}
 
 
 def _cos_intake_llm_reasons(state: SquadState, default_target: str) -> list[str]:
@@ -528,9 +540,14 @@ def _review_cos_intake_route(state: SquadState, default_target: str, reasons: li
 
 
 def cos_intake_node(state: SquadState):
-    default_target = route_after_intake(state)
-    reasons = _cos_intake_llm_reasons(state, default_target)
-    target, gate_mode, gate_rationale = _review_cos_intake_route(state, default_target, reasons)
+    if state.get("active_flow") == "ideation":
+        target = "cos"
+        gate_mode = "deterministic"
+        gate_rationale = "Fluxo ideation: Vision Agent processou a visao; CoS decide proximo passo."
+    else:
+        default_target = route_after_intake(state)
+        reasons = _cos_intake_llm_reasons(state, default_target)
+        target, gate_mode, gate_rationale = _review_cos_intake_route(state, default_target, reasons)
     policy = state.get("execution_policy", {})
     fixed = ", ".join(state.get("fixed_agents", [])) or "nenhum"
     on_demand = ", ".join(state.get("on_demand_agents", [])) or "nenhum"
@@ -540,6 +557,9 @@ def cos_intake_node(state: SquadState):
         if document.get("document_ref")
         else "Documento primario: nenhum selecionado."
     )
+    vision_section = ""
+    if state.get("vision_output"):
+        vision_section = f"\n\n## Mapa de Visao\n\n{state['vision_output'][:2000]}\n"
     brief = (
         "# CoS Intake Brief\n\n"
         f"Objetivo: {state['user_goal']}\n\n"
@@ -550,7 +570,8 @@ def cos_intake_node(state: SquadState):
         f"ate US$ {policy.get('max_cost_usd', 'n/a')}.\n"
         f"Agentes fixos: {fixed}.\n"
         f"Agentes sob demanda: {on_demand}.\n"
-        f"{document_line}\n\n"
+        f"{document_line}"
+        f"{vision_section}\n"
         "Diretriz do CoS: manter escopo, ECE e bloqueios visiveis; C3 nao pode virar "
         "execucao sem retorno ao CoS ou decisao humana."
     )
@@ -1483,9 +1504,12 @@ def route_after_cos(state: SquadState) -> str:
     return END
 
 
+from app.vision_node import vision_node  # noqa: E402 — after graph helpers are defined
+
 builder = StateGraph(SquadState)
 
 builder.add_node("intake", intake_node)
+builder.add_node("vision", vision_node)
 builder.add_node("cos_intake", cos_intake_node)
 builder.add_node("discovery", discovery_node)
 builder.add_node("writing", writing_node)
@@ -1501,11 +1525,12 @@ builder.add_node("qa_execution", qa_execution_node)
 builder.add_node("cos", cos_node)
 
 builder.add_edge(START, "intake")
-builder.add_edge("intake", "cos_intake")
+builder.add_conditional_edges("intake", _route_after_intake_node, ["vision", "cos_intake"])
+builder.add_edge("vision", "cos_intake")
 builder.add_conditional_edges(
     "cos_intake",
     route_after_cos_intake,
-    ["discovery", "product", "engineering", "engineering_review", "writing"]
+    ["discovery", "product", "engineering", "engineering_review", "writing", "cos"]
 )
 
 builder.add_conditional_edges(

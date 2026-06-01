@@ -18,6 +18,7 @@ FIXED_DELIVERY_AGENTS = (
 )
 
 FLOW_AGENTS = {
+    "ideation": ("vision", "cos"),
     "delivery_core": FIXED_DELIVERY_AGENTS,
     "delivery_with_discovery": ("discovery", *FIXED_DELIVERY_AGENTS),
     "bugfix": ("engineering", "operator", "engineering_review", "qa_execution", "cos"),
@@ -33,6 +34,24 @@ FLOW_TRIGGERS = {
     "review": ("review", "revisar codigo", "revisar código", "code review", "auditar codigo", "auditar código", "avaliar pr"),
     "decision_only": ("decidir", "decisao", "decisão", "trade-off", "tradeoff", "priorizar", "prioridade"),
     "research_only": ("pesquisar", "research", "benchmark", "concorrente", "mercado", "discovery", "evidencia", "evidência"),
+    "ideation": (
+        "visão estratégica", "visao estrategica",
+        "visão de produto", "visao de produto",
+        "mapa de visão", "mapa de visao",
+        "clarificar direção", "clarificar direcao",
+        "direção estratégica", "direcao estrategica",
+        "norte estratégico", "norte estrategico",
+        "rumo estratégico", "rumo estrategico",
+        "brief estratégico", "brief estrategico",
+        "brief inicial",
+        "ideação", "ideacao",
+        "ainda nebulosa", "ainda nebuloso",
+        "antes de construir", "antes de implementar",
+        "visão", "visao",
+        "explorar",
+        "direção", "direcao",
+        "estratégia", "estrategia",
+    ),
 }
 
 DELIVERY_TRIGGERS = ("implementar", "construir", "criar", "feature", "mvp", "release", "entregar", "desenvolver")
@@ -52,7 +71,11 @@ ON_DEMAND_AGENTS = {
         "posicionamento",
         "validar problema",
     ),
-    "ux_ui": ("ux", "ui", "interface", "tela", "formulario", "jornada", "wireframe", "usabilidade"),
+    "ux_ui": (
+        "ux", "ui", "interface", "tela", "formulario", "jornada", "wireframe", "usabilidade",
+        "bot", "chatbot", "assistente", "telegram", "whatsapp", "conversa", "conversacional",
+        "atendimento", "voicebot",
+    ),
     "privacy": ("privacidade", "lgpd", "dados pessoais", "cpf", "paciente", "compliance"),
     "appsec": ("seguranca", "segurança", "auth", "autenticacao", "permissao", "permissão"),
     "writing": ("documentacao", "documentação", "memo", "release note", "handoff"),
@@ -151,6 +174,11 @@ def _choose_flow(normalized: str) -> str:
         return "bugfix"
     if _matches(normalized, FLOW_TRIGGERS["review"]):
         return "review"
+    if _matches(normalized, DELIVERY_TRIGGERS):
+        if _matches(normalized, FLOW_TRIGGERS["research_only"]):
+            return "delivery_with_discovery"
+        if not re.search(r"^\s*(documentar|documentacao|documenta[cç][aã]o|readme|memo|guia|manual)\b", normalized):
+            return "delivery_core"
     if _matches(normalized, FLOW_TRIGGERS["docs"]):
         return "docs"
     if _matches(normalized, FLOW_TRIGGERS["decision_only"]):
@@ -159,4 +187,7 @@ def _choose_flow(normalized: str) -> str:
         if _matches(normalized, DELIVERY_TRIGGERS):
             return "delivery_with_discovery"
         return "research_only"
+    # Ideation: fired only when there is no concrete delivery/technical demand
+    if _matches(normalized, FLOW_TRIGGERS["ideation"]) and not _matches(normalized, DELIVERY_TRIGGERS):
+        return "ideation"
     return "delivery_core"

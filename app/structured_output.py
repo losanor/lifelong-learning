@@ -15,6 +15,7 @@ from contracts import Agente, Bloqueio, ECE, Fase, ProximoPasso, ResumoEstrutura
 SCHEMA_VERSION = "squad.agent_output.v1"
 
 AGENT_IDENTITY = {
+    "vision": (Agente.VISION, Fase.IDEACAO),
     "discovery": (Agente.DISCOVERY, Fase.DISCOVERY),
     "product": (Agente.PRODUCT, Fase.PRODUTO),
     "qa_planning": (Agente.QA, Fase.QA),
@@ -240,6 +241,7 @@ def mock_agent_output(
 ) -> str:
     agente, fase = AGENT_IDENTITY[agent_name]
     next_owner = {
+        "vision": Agente.COS,
         "discovery": Agente.PRODUCT,
         "product": Agente.QA,
         "qa_planning": Agente.ENGINEERING,

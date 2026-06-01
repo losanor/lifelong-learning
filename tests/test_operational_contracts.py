@@ -2505,5 +2505,105 @@ class OperationalContractsTest(unittest.TestCase):
                 db_path.unlink()
 
 
+class VisionAgentTests(unittest.TestCase):
+    """Tests for the Vision Agent node and ideation flow wiring."""
+
+    def test_intake_routes_to_ideation_for_vision_goal(self):
+        from app.intake import decide_intake
+
+        for goal in [
+            "Precisamos clarificar a visão estratégica do produto, ainda sem nada técnico definido",
+            "Quero explorar a direção do produto, ainda sem nada concreto",
+            "Mapa de visão do projeto para alinhar o time",
+            "Estratégia de posicionamento — nada técnico ainda",
+        ]:
+            with self.subTest(goal=goal):
+                decision = decide_intake(goal)
+                self.assertEqual(
+                    decision.active_flow,
+                    "ideation",
+                    f"Expected 'ideation' for goal: {goal!r}, got {decision.active_flow!r}",
+                )
+                all_agents = list(decision.fixed_agents) + list(decision.on_demand_agents)
+                self.assertIn("vision", all_agents,
+                              "vision should be in planned agents for ideation flow")
+
+    def test_vision_node_produces_valid_envelope(self):
+        from app.graph import graph  # noqa: F401 — ensures module loads without error
+        from app.mock_model import MockModel
+        from app.structured_output import AgentOutputEnvelope
+
+        state = {
+            "run_id": "test-vision-001",
+            "user_goal": "Clarificar visão estratégica do produto",
+            "active_flow": "ideation",
+            "memory_namespace": "test",
+            "fixed_agents": ["vision", "cos"],
+            "on_demand_agents": [],
+            "execution_policy": {"execution_tier": "quick", "max_cost_usd": 0.15},
+            "confidence_by_agent": {},
+            "summaries_by_agent": {},
+            "orchestrator_checks": {},
+            "structured_outputs": {},
+            "raw_model_outputs": {},
+            "cache_metrics": {},
+        }
+
+        with patch("app.graph.USE_MOCK_MODEL", True), \
+             patch("app.graph._resolve_model", return_value=MockModel()):
+            from app.vision_node import vision_node
+            result = vision_node(state)
+
+        self.assertIn("vision_output", result, "vision_node must set vision_output")
+        self.assertTrue(result["vision_output"], "vision_output must not be empty")
+        self.assertIn("vision", result.get("confidence_by_agent", {}),
+                      "confidence_by_agent must include vision key")
+        self.assertIn("vision", result.get("summaries_by_agent", {}),
+                      "summaries_by_agent must include vision key")
+
+    def test_cos_intake_includes_vision_output_in_brief(self):
+        from app.graph import cos_intake_node
+
+        vision_map = "## Mapa de Visão\n\nProblema: X\nRestrições: Y\nECE: C2"
+        state = {
+            "run_id": "test-cos-vision-001",
+            "user_goal": "Clarificar visão do produto",
+            "active_flow": "ideation",
+            "memory_namespace": "test",
+            "fixed_agents": ["vision", "cos"],
+            "on_demand_agents": [],
+            "execution_policy": {"execution_tier": "quick", "max_cost_usd": 0.15},
+            "confidence_by_agent": {},
+            "summaries_by_agent": {},
+            "vision_output": vision_map,
+        }
+
+        result = cos_intake_node(state)
+
+        brief = result["cos_intake_output"]
+        self.assertIn("Mapa de Visao", brief,
+                      "CoS Intake brief must include Mapa de Visao section when vision_output is set")
+        self.assertIn(vision_map[:100], brief,
+                      "CoS Intake brief must contain vision_output content")
+        self.assertEqual(result["cos_intake_target"], "cos",
+                         "ideation flow must route cos_intake_target to 'cos'")
+        self.assertEqual(result["cos_intake_mode"], "deterministic",
+                         "ideation flow gate must be deterministic")
+
+    def test_vision_node_is_registered_in_graph(self):
+        from app.graph import graph
+
+        node_names = set(graph.nodes.keys())
+        self.assertIn("vision", node_names, "graph must have a 'vision' node registered")
+
+    def test_ideation_flow_agents_include_vision_and_cos(self):
+        from app.intake import FLOW_AGENTS
+
+        self.assertIn("ideation", FLOW_AGENTS, "FLOW_AGENTS must include 'ideation' key")
+        agents = FLOW_AGENTS["ideation"]
+        self.assertIn("vision", agents, "ideation flow must include vision agent")
+        self.assertIn("cos", agents, "ideation flow must include cos agent")
+
+
 if __name__ == "__main__":
     unittest.main()

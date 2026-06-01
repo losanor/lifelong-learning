@@ -28,6 +28,7 @@ class SquadState(TypedDict, total=False):
     compact_memory: str
     cycle_summary: str
 
+    vision_output: str
     discovery_output: str
     product_output: str
     qa_plan_output: str
