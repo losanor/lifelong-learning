@@ -14,7 +14,7 @@ import app.graph as graph_module
 import app.pilot_readiness as pilot_readiness_module
 import app.run_service as run_service_module
 from app.evals import EvalScenario, assess_scenario
-from app.mock_model import MockResponse
+from app.mock_model import MockModel, MockResponse
 from app.observability import build_run_config
 from app.operational_api import make_handler
 from app.context_policy import build_context_bundle
@@ -2267,6 +2267,74 @@ class OperationalContractsTest(unittest.TestCase):
         finally:
             import os
             os.unlink(db)
+
+
+    def test_qa_execution_ece_comes_from_model_output(self):
+        """confidence_by_agent['qa_execution'] must reflect the model's ECE, not a hardcode."""
+        with (
+            patch.object(graph_module, "model", MockModel()),
+            patch.object(graph_module, "USE_MOCK_MODEL", True),
+        ):
+            state = {
+                "run_id": "test-p1c-001",
+                "user_goal": "Validar build do sistema.",
+                "workspace_root": ".",
+                "workspace_context": {},
+                "memory_namespace": "",
+                "operational_db_path": None,
+                "qa_plan_output": "QA plan mock.",
+                "engineering_output": "Engineering spec mock.",
+                "operator_output": "Operator package mock.",
+                "engineering_review_output": "Review mock.",
+                "privacy_output": "",
+                "appsec_output": "",
+                "manual_validation_result": "Validado manualmente.",
+                "confidence_by_agent": {},
+                "summaries_by_agent": {},
+                "structured_outputs": {},
+                "orchestrator_checks": {},
+                "raw_model_outputs": {},
+                "execution_policy": {},
+                "retry_state": {},
+            }
+            result = graph_module.qa_execution_node(state)
+            qa_ece = result["confidence_by_agent"].get("qa_execution")
+            # The mock returns ECE.C1 for qa_execution — but what matters is
+            # that it reads from the envelope, not a hardcoded literal.
+            self.assertIsNotNone(qa_ece, "qa_execution ECE must be populated")
+            self.assertIn(qa_ece, ("C1", "C2", "C3"), f"Unexpected ECE value: {qa_ece!r}")
+
+    def test_engineering_review_ece_comes_from_model_output(self):
+        """confidence_by_agent['engineering_review'] must reflect the model's ECE."""
+        with (
+            patch.object(graph_module, "model", MockModel()),
+            patch.object(graph_module, "USE_MOCK_MODEL", True),
+        ):
+            state = {
+                "run_id": "test-p1c-002",
+                "user_goal": "Revisar spec de engineering.",
+                "workspace_root": ".",
+                "workspace_context": {},
+                "memory_namespace": "",
+                "operational_db_path": None,
+                "product_output": "",
+                "qa_plan_output": "",
+                "engineering_output": "Spec mock.",
+                "operator_output": "Package mock.",
+                "privacy_output": "",
+                "appsec_output": "",
+                "confidence_by_agent": {},
+                "summaries_by_agent": {},
+                "structured_outputs": {},
+                "orchestrator_checks": {},
+                "raw_model_outputs": {},
+                "execution_policy": {},
+                "retry_state": {},
+            }
+            result = graph_module.engineering_review_node(state)
+            er_ece = result["confidence_by_agent"].get("engineering_review")
+            self.assertIsNotNone(er_ece)
+            self.assertIn(er_ece, ("C1", "C2", "C3"), f"Unexpected ECE value: {er_ece!r}")
 
 
 if __name__ == "__main__":

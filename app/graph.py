@@ -1009,7 +1009,7 @@ def engineering_review_node(state: SquadState):
         "engineering_review_output": response.content,
         "confidence_by_agent": {
             **state.get("confidence_by_agent", {}),
-            "engineering_review": "C2"
+            "engineering_review": response.envelope.summary.ece
         },
         "summaries_by_agent": {
             **state.get("summaries_by_agent", {}),
@@ -1053,6 +1053,7 @@ def qa_execution_node(state: SquadState):
         f"Resultado da validação manual:\n{validation}"
     )
 
+    qa_ece = response.envelope.summary.ece
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
@@ -1061,7 +1062,7 @@ def qa_execution_node(state: SquadState):
         to_agent="CoS / Orchestrator",
         artifact="QA Execution Report",
         summary=response.content[:500],
-        ece="C1",
+        ece=qa_ece,
         blockers="Bloqueios abertos dependem da avaliação final do CoS neste ciclo.",
         next_step="CoS deve avaliar coerência do ciclo, bloqueios e decisão de roteamento.",
         escalate_to_cos="Sim. Avaliação final do ciclo é responsabilidade do CoS."
@@ -1071,7 +1072,7 @@ def qa_execution_node(state: SquadState):
         "qa_exec_output": response.content,
         "confidence_by_agent": {
             **state.get("confidence_by_agent", {}),
-            "qa_execution": "C1"
+            "qa_execution": qa_ece
         },
         "summaries_by_agent": {
             **state.get("summaries_by_agent", {}),
