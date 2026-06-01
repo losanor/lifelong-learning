@@ -2605,5 +2605,384 @@ class VisionAgentTests(unittest.TestCase):
         self.assertIn("cos", agents, "ideation flow must include cos agent")
 
 
+class ExecutorPackageTests(unittest.TestCase):
+    """Tests for app/executor/ — adapters, registry, and select_adapter."""
+
+    # ------------------------------------------------------------------ helpers
+    def _make_spec(self, **kwargs) -> "TaskSpec":
+        from app.executor.base import TaskSpec
+        defaults = dict(
+            objective="Write a hello world function",
+            target_files=["hello.py"],
+            complexity="medium",
+        )
+        defaults.update(kwargs)
+        return TaskSpec(**defaults)
+
+    # ------------------------------------------------------------------ base
+    def test_task_spec_to_claude_prompt_contains_objective(self):
+        spec = self._make_spec(objective="Add unit tests for foo.py")
+        prompt = spec.to_claude_prompt()
+        self.assertIn("Add unit tests for foo.py", prompt)
+
+    def test_task_spec_to_claude_prompt_contains_all_sections(self):
+        spec = self._make_spec(
+            objective="Refactor bar",
+            context_files=["ctx.py"],
+            target_files=["bar.py"],
+            forbidden_files=["secrets.py"],
+            acceptance_criteria=["all tests pass"],
+            constraints=["no new dependencies"],
+            validation_commands=["pytest"],
+        )
+        prompt = spec.to_claude_prompt()
+        for fragment in [
+            "Refactor bar",
+            "ctx.py",
+            "bar.py",
+            "secrets.py",
+            "all tests pass",
+            "no new dependencies",
+            "pytest",
+        ]:
+            self.assertIn(fragment, prompt)
+
+    def test_execution_result_defaults(self):
+        from app.executor.base import ExecutionResult
+        r = ExecutionResult(success=True)
+        self.assertEqual(r.files_changed, [])
+        self.assertEqual(r.output, "")
+        self.assertIsNone(r.tokens_used)
+        self.assertFalse(r.partial)
+
+    # ------------------------------------------------------------------ ClaudeCodeAdapter
+    def test_claude_code_is_available_when_cli_present(self):
+        from app.executor.claude_code import ClaudeCodeAdapter
+        from unittest.mock import patch, MagicMock
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        with patch("app.executor.claude_code.subprocess.run", return_value=mock_result):
+            self.assertTrue(ClaudeCodeAdapter().is_available())
+
+    def test_claude_code_is_not_available_when_cli_absent(self):
+        from app.executor.claude_code import ClaudeCodeAdapter
+        from unittest.mock import patch
+        with patch(
+            "app.executor.claude_code.subprocess.run",
+            side_effect=FileNotFoundError("claude not found"),
+        ):
+            self.assertFalse(ClaudeCodeAdapter().is_available())
+
+    def test_claude_code_execute_success(self):
+        import tempfile, os
+        from app.executor.claude_code import ClaudeCodeAdapter
+        from unittest.mock import patch, MagicMock, call
+
+        def _fake_run(cmd, **kwargs):
+            r = MagicMock()
+            if cmd[0] == "claude":
+                r.returncode = 0
+                r.stdout = "done"
+                r.stderr = ""
+            else:  # git diff
+                r.returncode = 0
+                r.stdout = "hello.py\n"
+            return r
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("app.executor.claude_code.subprocess.run", side_effect=_fake_run):
+                result = ClaudeCodeAdapter().execute(self._make_spec(), Path(tmp))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("hello.py", result.files_changed)
+
+    def test_claude_code_execute_failure_no_exception(self):
+        import tempfile
+        from app.executor.claude_code import ClaudeCodeAdapter
+        from unittest.mock import patch, MagicMock
+
+        def _fake_run(cmd, **kwargs):
+            r = MagicMock()
+            r.returncode = 1
+            r.stdout = ""
+            r.stderr = "error"
+            return r
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("app.executor.claude_code.subprocess.run", side_effect=_fake_run):
+                result = ClaudeCodeAdapter().execute(self._make_spec(), Path(tmp))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.exit_code, 1)
+
+    def test_claude_code_execute_subprocess_crash_no_exception(self):
+        import tempfile
+        from app.executor.claude_code import ClaudeCodeAdapter
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch(
+                "app.executor.claude_code.subprocess.run",
+                side_effect=OSError("no such file"),
+            ):
+                result = ClaudeCodeAdapter().execute(self._make_spec(), Path(tmp))
+
+        self.assertFalse(result.success)
+        self.assertIn("no such file", result.errors)
+
+    def test_claude_code_estimated_cost_is_none(self):
+        from app.executor.claude_code import ClaudeCodeAdapter
+        self.assertIsNone(ClaudeCodeAdapter().estimated_cost(self._make_spec()))
+
+    # ------------------------------------------------------------------ CodexAdapter
+    def test_codex_is_available_with_api_key(self):
+        from app.executor.codex import CodexAdapter
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}):
+            self.assertTrue(CodexAdapter().is_available())
+
+    def test_codex_is_not_available_without_api_key(self):
+        from app.executor.codex import CodexAdapter
+        env = {k: v for k, v in __import__("os").environ.items() if k != "OPENAI_API_KEY"}
+        with patch.dict("os.environ", env, clear=True):
+            self.assertFalse(CodexAdapter().is_available())
+
+    def test_codex_execute_success(self):
+        import sys, tempfile
+        from app.executor.codex import CodexAdapter
+        from unittest.mock import MagicMock, patch
+
+        mock_openai = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.output_text = "def hello(): return 'hi'"
+        mock_resp.usage.total_tokens = 120
+        mock_openai.OpenAI.return_value.responses.create.return_value = mock_resp
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(sys.modules, {"openai": mock_openai}):
+                result = CodexAdapter().execute(self._make_spec(), Path(tmp))
+
+        self.assertTrue(result.success)
+        self.assertIn("hello", result.output)
+        self.assertEqual(result.tokens_used, 120)
+
+    def test_codex_execute_api_error_no_exception(self):
+        import sys, tempfile
+        from app.executor.codex import CodexAdapter
+        from unittest.mock import MagicMock, patch
+
+        mock_openai = MagicMock()
+        mock_openai.OpenAI.return_value.responses.create.side_effect = RuntimeError("API error")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(sys.modules, {"openai": mock_openai}):
+                result = CodexAdapter().execute(self._make_spec(), Path(tmp))
+
+        self.assertFalse(result.success)
+        self.assertIn("API error", result.errors)
+
+    def test_codex_execute_import_error_no_exception(self):
+        import sys, tempfile
+        from app.executor.codex import CodexAdapter
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(sys.modules, {"openai": None}):
+                result = CodexAdapter().execute(self._make_spec(), Path(tmp))
+
+        self.assertFalse(result.success)
+        self.assertIn("not installed", result.errors)
+
+    def test_codex_estimated_cost_proportional_to_complexity(self):
+        from app.executor.codex import CodexAdapter
+        adapter = CodexAdapter()
+        low = adapter.estimated_cost(self._make_spec(complexity="low"))
+        high = adapter.estimated_cost(self._make_spec(complexity="high"))
+        self.assertIsNotNone(low)
+        self.assertIsNotNone(high)
+        self.assertGreater(high, low)
+
+    # ------------------------------------------------------------------ AiderAdapter
+    def test_aider_is_available_when_cli_present(self):
+        from app.executor.aider import AiderAdapter
+        from unittest.mock import patch, MagicMock
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        with patch("app.executor.aider.subprocess.run", return_value=mock_result):
+            self.assertTrue(AiderAdapter().is_available())
+
+    def test_aider_is_not_available_when_cli_absent(self):
+        from app.executor.aider import AiderAdapter
+        from unittest.mock import patch
+        with patch(
+            "app.executor.aider.subprocess.run",
+            side_effect=FileNotFoundError("aider not found"),
+        ):
+            self.assertFalse(AiderAdapter().is_available())
+
+    def test_aider_execute_success(self):
+        import tempfile
+        from app.executor.aider import AiderAdapter
+        from unittest.mock import patch, MagicMock
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Applied changes."
+        mock_result.stderr = ""
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("app.executor.aider.subprocess.run", return_value=mock_result):
+                result = AiderAdapter().execute(self._make_spec(), Path(tmp))
+        self.assertTrue(result.success)
+        self.assertIn("Applied", result.output)
+
+    def test_aider_execute_failure_no_exception(self):
+        import tempfile
+        from app.executor.aider import AiderAdapter
+        from unittest.mock import patch, MagicMock
+        mock_result = MagicMock()
+        mock_result.returncode = 2
+        mock_result.stdout = ""
+        mock_result.stderr = "conflict"
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("app.executor.aider.subprocess.run", return_value=mock_result):
+                result = AiderAdapter().execute(self._make_spec(), Path(tmp))
+        self.assertFalse(result.success)
+        self.assertEqual(result.exit_code, 2)
+
+    def test_aider_execute_exception_no_raise(self):
+        import tempfile
+        from app.executor.aider import AiderAdapter
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch(
+                "app.executor.aider.subprocess.run",
+                side_effect=OSError("aider crashed"),
+            ):
+                result = AiderAdapter().execute(self._make_spec(), Path(tmp))
+        self.assertFalse(result.success)
+        self.assertIn("aider crashed", result.errors)
+
+    def test_aider_estimated_cost_local_model(self):
+        from app.executor.aider import AiderAdapter
+        with patch.dict("os.environ", {"AIDER_MODEL": "ollama/codellama"}):
+            cost = AiderAdapter().estimated_cost(self._make_spec())
+        self.assertEqual(cost, 0.0)
+
+    def test_aider_estimated_cost_cloud_model_is_none(self):
+        from app.executor.aider import AiderAdapter
+        env = {k: v for k, v in __import__("os").environ.items() if k != "AIDER_MODEL"}
+        with patch.dict("os.environ", {"AIDER_MODEL": "gpt-4o"}, clear=False):
+            cost = AiderAdapter().estimated_cost(self._make_spec())
+        self.assertIsNone(cost)
+
+    # ------------------------------------------------------------------ registry
+    def test_get_registry_returns_all_three_adapters(self):
+        from app.executor.registry import get_registry
+        reg = get_registry()
+        for name in ("claude_code", "codex", "aider"):
+            self.assertIn(name, reg)
+
+    def test_select_adapter_prefers_preferred_executor(self):
+        from app.executor.registry import select_adapter, REGISTRY
+        from unittest.mock import patch
+
+        spec = self._make_spec(preferred_executor="claude_code", complexity="low")
+        with patch.object(REGISTRY["claude_code"], "is_available", return_value=True):
+            chosen = select_adapter(spec, {})
+        self.assertEqual(chosen.name(), "claude_code")
+
+    def test_select_adapter_skips_unavailable_preferred_and_falls_through(self):
+        from app.executor.registry import select_adapter, REGISTRY
+        from unittest.mock import patch
+
+        spec = self._make_spec(preferred_executor="claude_code", complexity="low")
+        # low order: codex, aider, claude_code
+        with (
+            patch.object(REGISTRY["claude_code"], "is_available", return_value=False),
+            patch.object(REGISTRY["codex"], "is_available", return_value=True),
+            patch.object(REGISTRY["codex"], "estimated_cost", return_value=0.01),
+            patch.object(REGISTRY["aider"], "is_available", return_value=False),
+        ):
+            chosen = select_adapter(spec, {})
+        self.assertEqual(chosen.name(), "codex")
+
+    def test_select_adapter_high_complexity_prefers_claude_code(self):
+        from app.executor.registry import select_adapter, REGISTRY
+        from unittest.mock import patch
+
+        spec = self._make_spec(complexity="high")
+        # high order: claude_code, codex, aider
+        with (
+            patch.object(REGISTRY["claude_code"], "is_available", return_value=True),
+            patch.object(REGISTRY["codex"], "is_available", return_value=True),
+        ):
+            chosen = select_adapter(spec, {})
+        self.assertEqual(chosen.name(), "claude_code")
+
+    def test_select_adapter_budget_filter_skips_over_budget(self):
+        from app.executor.registry import select_adapter, REGISTRY
+        from unittest.mock import patch
+
+        spec = self._make_spec(complexity="medium")
+        # medium order: codex, aider, claude_code
+        with (
+            patch.object(REGISTRY["codex"], "is_available", return_value=True),
+            patch.object(REGISTRY["codex"], "estimated_cost", return_value=0.05),
+            patch.object(REGISTRY["aider"], "is_available", return_value=True),
+            patch.object(REGISTRY["aider"], "estimated_cost", return_value=0.0),
+            patch.object(REGISTRY["claude_code"], "is_available", return_value=False),
+        ):
+            chosen = select_adapter(spec, {"budget_remaining_usd": 0.01})
+        # codex costs 0.05 > 0.01 budget, so skipped; aider costs 0.0, selected
+        self.assertEqual(chosen.name(), "aider")
+
+    def test_select_adapter_raises_when_none_available(self):
+        from app.executor.registry import select_adapter, REGISTRY
+        from unittest.mock import patch
+
+        spec = self._make_spec(complexity="medium")
+        with (
+            patch.object(REGISTRY["codex"], "is_available", return_value=False),
+            patch.object(REGISTRY["aider"], "is_available", return_value=False),
+            patch.object(REGISTRY["claude_code"], "is_available", return_value=False),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                select_adapter(spec, {})
+        self.assertIn("No code executor adapter", str(ctx.exception))
+
+    def test_select_adapter_cost_none_is_not_filtered(self):
+        """An adapter returning estimated_cost=None passes budget check (cost unknown)."""
+        from app.executor.registry import select_adapter, REGISTRY
+        from unittest.mock import patch
+
+        spec = self._make_spec(complexity="medium")
+        with (
+            patch.object(REGISTRY["codex"], "is_available", return_value=True),
+            patch.object(REGISTRY["codex"], "estimated_cost", return_value=None),
+        ):
+            chosen = select_adapter(spec, {"budget_remaining_usd": 0.001})
+        self.assertEqual(chosen.name(), "codex")
+
+    # ------------------------------------------------------------------ pilot_readiness
+    def test_pilot_readiness_includes_executor_adapters(self):
+        import app.pilot_readiness as pr_module
+        from unittest.mock import patch
+
+        with patch("app.pilot_readiness.get_registry") as mock_reg:
+            from app.executor.base import CodeExecutorAdapter, TaskSpec, ExecutionResult
+            class _FakeAdapter(CodeExecutorAdapter):
+                def name(self): return "fake"
+                def is_available(self): return True
+                def execute(self, t, w): return ExecutionResult(success=True)
+                def estimated_cost(self, t): return None
+
+            mock_reg.return_value = {"fake": _FakeAdapter()}
+            result = pr_module.pilot_readiness()
+
+        self.assertIn("executor_adapters", result)
+        self.assertIn("registered", result["executor_adapters"])
+        self.assertIn("available", result["executor_adapters"])
+        self.assertIn("fake", result["executor_adapters"]["available"])
+
+
 if __name__ == "__main__":
     unittest.main()

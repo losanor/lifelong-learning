@@ -8,6 +8,7 @@ import os
 from app.config import ANTHROPIC_API_KEY, USE_MOCK_MODEL
 from app.observability import langsmith_enabled, langsmith_ready
 from app.operational_store import DEFAULT_DB_PATH, metrics_snapshot
+from app.executor.registry import get_registry
 
 
 def pilot_readiness() -> dict:
@@ -30,6 +31,8 @@ def pilot_readiness() -> dict:
         findings.append("Sampling acima de 25% pode consumir mais rapidamente a franquia gratuita.")
 
     metrics = metrics_snapshot(DEFAULT_DB_PATH) if DEFAULT_DB_PATH.exists() else {}
+    registry = get_registry()
+    available_adapters = [name for name, adapter in registry.items() if adapter.is_available()]
     ready_for_real_pilot = (
         not USE_MOCK_MODEL
         and bool(ANTHROPIC_API_KEY)
@@ -56,6 +59,10 @@ def pilot_readiness() -> dict:
             "run_count": metrics.get("run_count", 0),
             "execution_ready_rate": metrics.get("execution_ready_rate", 0),
             "escalation_rate": metrics.get("escalation_rate", 0),
+        },
+        "executor_adapters": {
+            "registered": list(registry.keys()),
+            "available": available_adapters,
         },
         "findings": findings,
     }
