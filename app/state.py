@@ -78,3 +78,4 @@ class SquadState(TypedDict, total=False):
 
     needs_discovery: bool
     budget_exceeded: bool
+    cache_metrics: dict[str, dict]

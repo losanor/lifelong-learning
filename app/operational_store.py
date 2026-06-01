@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any
 import uuid
@@ -321,6 +322,7 @@ def initialize_schema(db_path: str | Path = DEFAULT_DB_PATH) -> None:
             "observability_status": "TEXT NOT NULL DEFAULT ''",
             "observability_error": "TEXT NOT NULL DEFAULT ''",
             "observability_synced_at": "TEXT",
+            "cache_metrics_json": "TEXT NOT NULL DEFAULT '{}'",
         }
         for column_name, column_type in run_migrations.items():
             if column_name not in run_columns:
@@ -385,6 +387,8 @@ def record_run(
     )
     packet = result.get("operational_packet", {})
 
+    cache_metrics = result.get("cache_metrics") or {}
+
     with _connection(db_path) as connection:
         connection.execute(
             """
@@ -394,8 +398,8 @@ def record_run(
                 status, cos_decision,
                 route_action, route_decision, human_escalation_created,
                 execution_ready, agent_count, c3_count, duration_ms,
-                trace_id, operational_packet_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                trace_id, operational_packet_json, cache_metrics_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id) DO UPDATE SET
                 project_id=excluded.project_id,
                 initiative_id=excluded.initiative_id,
@@ -416,7 +420,8 @@ def record_run(
                     WHEN excluded.trace_id != '' THEN excluded.trace_id
                     ELSE runs.trace_id
                 END,
-                operational_packet_json=excluded.operational_packet_json
+                operational_packet_json=excluded.operational_packet_json,
+                cache_metrics_json=excluded.cache_metrics_json
             """,
             (
                 run_id,
@@ -439,6 +444,7 @@ def record_run(
                 duration_ms,
                 trace_id,
                 json.dumps(packet, ensure_ascii=False),
+                json.dumps(cache_metrics, ensure_ascii=False),
             ),
         )
 
@@ -776,6 +782,39 @@ def record_execution_request(
         )
 
 
+def update_execution_request_target_refs(
+    request_id: str,
+    *,
+    target_refs: list[str],
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        request = connection.execute(
+            "SELECT packet_json FROM execution_requests WHERE request_id=?",
+            (request_id,),
+        ).fetchone()
+        if request is None:
+            raise ValueError("Execution request not found.")
+        packet = json.loads(request["packet_json"])
+        packet["target_refs"] = target_refs
+        now = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            """
+            UPDATE execution_requests
+            SET target_refs_json=?, packet_json=?, updated_at=?
+            WHERE request_id=?
+            """,
+            (
+                json.dumps(target_refs, ensure_ascii=False),
+                json.dumps(packet, ensure_ascii=False),
+                now,
+                request_id,
+            ),
+        )
+    return execution_request_snapshot(request_id=request_id, db_path=db_path)["requests"][0]
+
+
 def record_execution_decision(
     request_id: str,
     *,
@@ -1088,6 +1127,63 @@ def record_workflow_checkpoint(
         )
 
 
+def record_human_decision(
+    *,
+    decision_id: str,
+    run_id: str,
+    project_id: str,
+    initiative_id: str,
+    source_agent: str,
+    reason: str,
+    question: str,
+    recommendation: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    initialize_schema(db_path)
+    now = datetime.now(timezone.utc).isoformat()
+    with _connection(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO human_decisions (
+                decision_id, run_id, created_at, updated_at, project_id,
+                initiative_id, status, source_agent, reason, question,
+                recommendation
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+            ON CONFLICT(run_id) DO UPDATE SET
+                decision_id=excluded.decision_id,
+                updated_at=CASE
+                    WHEN human_decisions.status='pending' THEN excluded.updated_at
+                    ELSE excluded.updated_at
+                END,
+                status='pending',
+                response='',
+                resolution='',
+                decided_by='',
+                source_agent=excluded.source_agent,
+                reason=excluded.reason,
+                question=excluded.question,
+                recommendation=excluded.recommendation
+            """,
+            (
+                decision_id[:160],
+                run_id[:120],
+                now,
+                now,
+                project_id[:120],
+                initiative_id[:120],
+                source_agent[:120],
+                reason[:4000],
+                question[:4000],
+                recommendation[:4000],
+            ),
+        )
+    return next(
+        item
+        for item in human_decision_snapshot(db_path, include_validation=True)["decisions"]
+        if item["decision_id"] == decision_id[:160]
+    )
+
+
 def workflow_checkpoint_snapshot(
     *,
     thread_id: str | None = None,
@@ -1125,11 +1221,18 @@ def pending_work_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, An
         "git_committed": "Publicar branch e abrir PR draft apos revisao humana.",
     }
     snapshot = execution_request_snapshot(db_path=db_path)
+    decision_snapshot = human_decision_snapshot(db_path, include_validation=True)
+    pending_decision_by_run = {
+        item["run_id"]: item
+        for item in decision_snapshot["decisions"]
+        if item["status"] == "pending" and item.get("is_actionable")
+    }
     pending: list[dict[str, Any]] = []
     for request in snapshot["requests"]:
         status = request["status"]
         if status not in pending_statuses:
             continue
+        decision = pending_decision_by_run.get(request["run_id"])
         pending.append(
             {
                 "thread_id": request["run_id"],
@@ -1137,7 +1240,11 @@ def pending_work_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, An
                 "project_id": request["project_id"],
                 "initiative_id": request["initiative_id"],
                 "status": status,
-                "next_action": pending_statuses[status],
+                "next_action": (
+                    f"Responder pendencia humana: {decision['decision_title']}."
+                    if decision
+                    else pending_statuses[status]
+                ),
                 "target_refs": request["target_refs"],
                 "updated_at": request["updated_at"],
             }
@@ -1160,7 +1267,8 @@ def recent_runs_snapshot(
             SELECT run_id, created_at, project_id, initiative_id, user_goal,
                 active_flow, execution_tier, status, execution_ready,
                 agent_count, duration_ms, trace_id, observed_cost_usd,
-                observed_tokens, trace_url, observability_status
+                observed_tokens, trace_url, observability_status,
+                operational_packet_json
             FROM runs
             {scope_filter}
             ORDER BY created_at DESC
@@ -1168,7 +1276,12 @@ def recent_runs_snapshot(
             """,
             (safe_limit,),
         ).fetchall()
-    return {"run_count": len(rows), "runs": [dict(row) for row in rows]}
+    runs = [dict(row) for row in rows]
+    for run in runs:
+        packet = json.loads(run.pop("operational_packet_json") or "{}")
+        run["runtime_status"] = packet.get("runtime_status", "")
+        run["product_acceptance_status"] = packet.get("product_acceptance_status", "")
+    return {"run_count": len(runs), "runs": runs}
 
 
 def record_automation_demand(
@@ -1225,6 +1338,229 @@ def automation_demand_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[st
     return {"demand_count": len(demands), "demands": demands}
 
 
+def _friendly_decision_context(decision: dict[str, Any]) -> dict[str, Any]:
+    reason = decision.get("reason", "")
+    question = decision.get("question", "")
+    previous_step = decision.get("previous_step") or {}
+    combined = f"{reason} {question}".casefold()
+    options = [
+        {
+            "resolution": "continue",
+            "label": "Continuar com a recomendacao",
+            "description": "Autorizar a squad a seguir pelo caminho recomendado abaixo.",
+        },
+        {
+            "resolution": "request_revision",
+            "label": "Pedir revisao",
+            "description": "Solicitar novo ciclo com ajuste de escopo, PRD, evidencias ou artefato.",
+        },
+        {
+            "resolution": "close",
+            "label": "Encerrar",
+            "description": "Parar esta demanda sem nova execucao.",
+        },
+    ]
+    context = {
+        "decision_title": "Decidir continuidade da demanda",
+        "what_happened": "A squad pediu uma decisao humana antes de produzir efeitos.",
+        "decision_needed": question or "Escolha se a squad deve continuar, revisar ou encerrar.",
+        "squad_recommendation": decision.get("recommendation", ""),
+        "recommended_resolution": "continue",
+        "human_options": options,
+        "technical_reason": reason,
+    }
+    if previous_step:
+        source = previous_step.get("source_agent") or previous_step.get("agent_name") or "Agente anterior"
+        target = previous_step.get("target_agent") or "CoS / Orchestrator"
+        artifact = previous_step.get("artifact") or previous_step.get("artifact_type") or "artefato"
+        context["what_happened"] = (
+            f"O ultimo passo registrado foi {source} -> {target}, com o artefato {artifact}. "
+            "Depois disso a squad pediu decisao humana antes de continuar."
+        )
+        if question.casefold().startswith("definir o proximo passo"):
+            next_step = previous_step.get("next_step") or previous_step.get("blockers") or ""
+            context["decision_needed"] = (
+                next_step
+                or "Escolha se a squad deve continuar a partir do passo anterior, revisar o escopo ou encerrar."
+            )
+    if "return_to_product" in combined or "route_to_product" in combined:
+        context.update(
+            {
+                "decision_title": "Autorizar revisao de Produto",
+                "what_happened": (
+                    "O CoS entendeu que o escopo ainda nao esta pronto para Engenharia/QA. "
+                    "Produto precisa transformar a PRD/contexto em criterios testaveis."
+                ),
+                "decision_needed": (
+                    "Escolha se a squad deve voltar para Produto com os insumos atuais, "
+                    "se voce quer complementar a PRD antes, ou se prefere encerrar este ciclo."
+                ),
+                "squad_recommendation": (
+                    "Recomendo pedir revisao de Produto informando exatamente o insumo que faltou "
+                    "ou iniciar uma nova run de entrega completa com a PRD correta selecionada."
+                ),
+                "recommended_resolution": "request_revision",
+            }
+        )
+    elif "no_go" in combined:
+        validation_gap = "validacao" in combined or "validação" in combined
+        context.update(
+            {
+                "decision_title": "Decidir se redesenha ou encerra",
+                "what_happened": (
+                    "A squad emitiu NO-GO: neste ciclo ela nao encontrou evidencias suficientes "
+                    "para recomendar continuidade."
+                ),
+                "decision_needed": (
+                    "Escolha entre redesenhar o ciclo com mais insumos/evidencias ou encerrar esta demanda."
+                ),
+                "squad_recommendation": (
+                    "Recomendo pedir revisao se o problema continua valido. Encerre apenas se o escopo "
+                    "nao deve mais seguir."
+                ),
+                "recommended_resolution": "request_revision",
+            }
+        )
+        if validation_gap:
+            context["what_happened"] = (
+                "A squad emitiu NO-GO porque nao havia evidencia de validacao executada. "
+                "QA consegue validar tecnicamente quando existe artefato executavel, patch aplicado "
+                "ou comandos de teste definidos; nesta etapa ele nao tinha esse material para testar sozinho."
+            )
+            context["decision_needed"] = (
+                "Decida se a squad deve voltar para implementar/preparar um artefato validavel, "
+                "se voce vai anexar evidencia de validacao, ou se este ciclo deve ser encerrado."
+            )
+            context["squad_recommendation"] = (
+                "Recomendo pedir revisao para gerar ou apontar o artefato executavel e depois rodar QA "
+                "com validacoes objetivas."
+            )
+    elif "retry" in combined or "limite" in combined:
+        context.update(
+            {
+                "decision_title": "Resolver limite de tentativas",
+                "what_happened": "A squad atingiu o limite de retorno automatico entre agentes.",
+                "decision_needed": (
+                    "Escolha se autoriza mais um ciclo de revisao, muda o escopo ou encerra a demanda."
+                ),
+                "squad_recommendation": "Recomendo revisar o escopo antes de autorizar nova tentativa.",
+                "recommended_resolution": "request_revision",
+            }
+        )
+    return context
+
+
+def _decision_scope_key(decision: dict[str, Any]) -> str:
+    project_id = (decision.get("project_id") or "").strip()
+    initiative_id = (decision.get("initiative_id") or "").strip()
+    if project_id or initiative_id:
+        return f"{project_id or 'default'}::{initiative_id or 'default'}"
+    return f"run::{decision.get('run_id', '')}"
+
+
+def _apply_decision_governance(decisions: list[dict[str, Any]]) -> dict[str, int]:
+    pending_by_scope: dict[str, list[dict[str, Any]]] = {}
+    for decision in decisions:
+        scope_key = _decision_scope_key(decision)
+        unscoped_legacy = not (decision.get("project_id") or "").strip() and not (
+            decision.get("initiative_id") or ""
+        ).strip()
+        decision["scope_key"] = scope_key
+        decision["is_actionable"] = decision["status"] == "pending" and not unscoped_legacy
+        decision["blocked_by_decision_id"] = ""
+        decision["blocked_by_title"] = ""
+        if decision["status"] != "pending":
+            decision["governance_status"] = "historical"
+            decision["governance_reason"] = "Esta decisao ja foi respondida e fica apenas como historico."
+        elif unscoped_legacy:
+            decision["governance_status"] = "legacy"
+            decision["governance_reason"] = (
+                "Esta decisao pertence a uma execucao antiga sem projeto/iniciativa. "
+                "Ela fica visivel para auditoria, mas nao entra como decisao acionavel do projeto atual."
+            )
+        else:
+            decision["governance_status"] = "actionable"
+            decision["governance_reason"] = "Pode ser decidida agora."
+
+        if decision["status"] == "pending" and not unscoped_legacy:
+            pending_by_scope.setdefault(scope_key, []).append(decision)
+
+    for scoped_pending in pending_by_scope.values():
+        if len(scoped_pending) <= 1:
+            continue
+        scoped_pending.sort(key=lambda item: (item.get("created_at", ""), item.get("updated_at", "")))
+        primary = scoped_pending[0]
+        primary["governance_reason"] = (
+            "Esta e a decisao bloqueante mais antiga deste projeto/iniciativa. "
+            "Resolva primeiro para preservar a ordem do fluxo."
+        )
+        for blocked in scoped_pending[1:]:
+            blocked["is_actionable"] = False
+            blocked["blocked_by_decision_id"] = primary["decision_id"]
+            blocked["blocked_by_title"] = primary.get("decision_title", "decisao anterior")
+            blocked["governance_status"] = "blocked"
+            blocked["governance_reason"] = (
+                "Existe uma decisao anterior aberta no mesmo projeto/iniciativa. "
+                "Esta decisao pode mudar ou perder sentido depois da resposta anterior."
+            )
+
+    actionable = sum(1 for item in decisions if item["is_actionable"])
+    blocked = sum(1 for item in decisions if item["governance_status"] == "blocked")
+    legacy = sum(1 for item in decisions if item["governance_status"] == "legacy")
+    pending = sum(1 for item in decisions if item["status"] == "pending")
+    return {
+        "actionable_pending_count": actionable,
+        "blocked_pending_count": blocked,
+        "legacy_pending_count": legacy,
+        "pending_count": pending,
+    }
+
+
+def _decision_previous_step_snapshot(
+    connection: sqlite3.Connection,
+    run_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    if not run_ids:
+        return {}
+    placeholders = ",".join("?" for _ in run_ids)
+    handoff_rows = connection.execute(
+        f"""
+        SELECT run_id, occurred_at, source_agent, target_agent, artifact,
+               summary, ece, blockers, next_step
+        FROM handoff_events
+        WHERE run_id IN ({placeholders})
+        ORDER BY run_id, event_id ASC
+        """,
+        run_ids,
+    ).fetchall()
+    previous_steps: dict[str, dict[str, Any]] = {}
+    human_fallbacks: dict[str, dict[str, Any]] = {}
+    for row in handoff_rows:
+        item = dict(row)
+        if item["target_agent"] == "Human Decision Maker":
+            human_fallbacks[item["run_id"]] = item
+            continue
+        previous_steps[item["run_id"]] = item
+    for run_id, item in human_fallbacks.items():
+        previous_steps.setdefault(run_id, item)
+
+    missing_run_ids = [run_id for run_id in run_ids if run_id not in previous_steps]
+    if missing_run_ids:
+        output_placeholders = ",".join("?" for _ in missing_run_ids)
+        output_rows = connection.execute(
+            f"""
+            SELECT run_id, agent_name, ece, artifact_type, execution_ready
+            FROM agent_outputs
+            WHERE run_id IN ({output_placeholders})
+            ORDER BY run_id, rowid ASC
+            """,
+            missing_run_ids,
+        ).fetchall()
+        for row in output_rows:
+            previous_steps[row["run_id"]] = dict(row)
+    return previous_steps
+
+
 def human_decision_snapshot(
     db_path: str | Path = DEFAULT_DB_PATH,
     *,
@@ -1244,35 +1580,48 @@ def human_decision_snapshot(
         rows = connection.execute(
             "SELECT * FROM human_decisions ORDER BY status='pending' DESC, updated_at DESC"
         ).fetchall()
+        all_run_ids = [row["run_id"] for row in rows] + [row["run_id"] for row in legacy_rows]
+        previous_steps = _decision_previous_step_snapshot(connection, all_run_ids)
     decisions = [
         dict(row) for row in rows
         if include_validation or not _is_validation_initiative(row["initiative_id"])
     ]
+    for decision in decisions:
+        decision["previous_step"] = previous_steps.get(decision["run_id"], {})
     for row in legacy_rows:
         if not include_validation and _is_validation_initiative(row["initiative_id"]):
             continue
         packet = json.loads(row["operational_packet_json"] or "{}")
-        decisions.append(
-            {
-                "decision_id": f"decision_{row['run_id']}",
-                "run_id": row["run_id"],
-                "created_at": row["created_at"],
-                "updated_at": row["created_at"],
-                "project_id": row["project_id"],
-                "initiative_id": row["initiative_id"],
-                "status": "pending",
-                "source_agent": "CoS / Orchestrator",
-                "reason": f"Decisao {row['cos_decision'] or row['route_decision']} exige validacao humana.",
-                "question": packet.get("human_checkpoint") or "Definir o proximo passo desta demanda.",
-                "recommendation": "Responder antes de permitir continuidade ou efeitos.",
-                "response": "",
-                "resolution": "",
-                "decided_by": "",
-            }
-        )
+        legacy_decision = {
+            "decision_id": f"decision_{row['run_id']}",
+            "run_id": row["run_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["created_at"],
+            "project_id": row["project_id"],
+            "initiative_id": row["initiative_id"],
+            "status": "pending",
+            "source_agent": "CoS / Orchestrator",
+            "reason": f"Decisao {row['cos_decision'] or row['route_decision']} exige validacao humana.",
+            "question": packet.get("human_checkpoint") or "Definir o proximo passo desta demanda.",
+            "recommendation": "Responder antes de permitir continuidade ou efeitos.",
+            "response": "",
+            "resolution": "",
+            "decided_by": "",
+        }
+        legacy_decision["previous_step"] = previous_steps.get(row["run_id"], {})
+        decisions.append(legacy_decision)
+    for decision in decisions:
+        decision.update(_friendly_decision_context(decision))
+    governance = _apply_decision_governance(decisions)
     decisions.sort(key=lambda item: (item["status"] == "pending", item["updated_at"]), reverse=True)
-    pending_count = sum(1 for item in decisions if item["status"] == "pending")
-    return {"decision_count": len(decisions), "pending_count": pending_count, "decisions": decisions}
+    return {
+        "decision_count": len(decisions),
+        "pending_count": governance["pending_count"],
+        "actionable_pending_count": governance["actionable_pending_count"],
+        "blocked_pending_count": governance["blocked_pending_count"],
+        "legacy_pending_count": governance["legacy_pending_count"],
+        "decisions": decisions,
+    }
 
 
 def respond_human_decision(
@@ -1293,7 +1642,7 @@ def respond_human_decision(
     now = datetime.now(timezone.utc).isoformat()
     with _connection(db_path) as connection:
         row = connection.execute(
-            "SELECT run_id, status FROM human_decisions WHERE decision_id=?",
+            "SELECT run_id, status, question FROM human_decisions WHERE decision_id=?",
             (decision_id,),
         ).fetchone()
         if row is None:
@@ -1333,9 +1682,59 @@ def respond_human_decision(
                     "Responder antes de permitir continuidade ou efeitos.",
                 ),
             )
-            row = {"run_id": legacy["run_id"], "status": "pending"}
+            row = {"run_id": legacy["run_id"], "status": "pending", "question": packet.get("human_checkpoint") or ""}
         if row["status"] != "pending":
             raise ValueError("A decisao humana ja foi respondida.")
+
+        if resolution == "continue" and "TELEGRAM_TOKEN" in str(row["question"]):
+            run = connection.execute(
+                "SELECT operational_packet_json FROM runs WHERE run_id=?",
+                (row["run_id"],),
+            ).fetchone()
+            packet = json.loads(run["operational_packet_json"] or "{}") if run else {}
+            workspace_root = str(packet.get("workspace_root", "")).strip()
+            if not workspace_root:
+                for item in packet.get("external_inputs", []):
+                    workspace_root = str(item.get("workspace_root", "")).strip()
+                    if workspace_root:
+                        break
+            env_path = Path(workspace_root) / ".env" if workspace_root else None
+            env_example_path = Path(workspace_root) / ".env.example" if workspace_root else None
+            token_ready = False
+            if env_path and env_path.exists():
+                token_ready = bool(
+                    re.search(
+                        r"^TELEGRAM_TOKEN=\S+",
+                        env_path.read_text(encoding="utf-8-sig", errors="replace"),
+                        re.MULTILINE,
+                    )
+                )
+            if not token_ready:
+                example_has_token = False
+                if env_example_path and env_example_path.exists():
+                    example_has_token = bool(
+                        re.search(
+                            r"^TELEGRAM_TOKEN=\S+",
+                            env_example_path.read_text(encoding="utf-8-sig", errors="replace"),
+                            re.MULTILINE,
+                        )
+                    )
+                raise ValueError(
+                    (
+                        "A chave foi preenchida em .env.example. Esse arquivo e apenas um modelo e nao deve conter segredos. "
+                        "Copie .env.example para .env, preencha TELEGRAM_TOKEN em .env e remova o valor de .env.example."
+                        if example_has_token
+                        else "Ainda falta configurar TELEGRAM_TOKEN no arquivo .env do workspace antes de continuar."
+                    )
+                )
+
+    snapshot = human_decision_snapshot(db_path, include_validation=True)
+    current = next((item for item in snapshot["decisions"] if item["decision_id"] == decision_id), None)
+    if current and not current.get("is_actionable", True):
+        blocked_by = current.get("blocked_by_title") or current.get("blocked_by_decision_id") or "decisao anterior"
+        raise ValueError(f"Resolva primeiro a decisao bloqueante: {blocked_by}.")
+
+    with _connection(db_path) as connection:
         connection.execute(
             """
             UPDATE human_decisions SET
@@ -1352,11 +1751,87 @@ def respond_human_decision(
         payload={"decision_id": decision_id, "resolution": resolution, "decided_by": decided_by},
         db_path=db_path,
     )
+    if resolution == "continue" and "TELEGRAM_TOKEN" in str(row["question"]):
+        record_workflow_checkpoint(
+            thread_id=row["run_id"],
+            run_id=row["run_id"],
+            stage="external_input_confirmed",
+            status="ready_for_runtime_start",
+            payload={"decision_id": decision_id, "input": "TELEGRAM_TOKEN"},
+            db_path=db_path,
+        )
+        update_run_status(
+            row["run_id"],
+            status="return_requested",
+            operational_packet={
+                **packet,
+                "post_apply_status": "ready_for_runtime_start",
+                "product_acceptance_status": "functional_qa_pending",
+            },
+            db_path=db_path,
+        )
     return next(
         item
         for item in human_decision_snapshot(db_path, include_validation=True)["decisions"]
         if item["decision_id"] == decision_id
     )
+
+
+def record_functional_qa_result(
+    run_id: str,
+    *,
+    passed: bool,
+    evidence: str,
+    decided_by: str = "owner",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    evidence = evidence.strip()
+    if len(evidence) < 20:
+        raise ValueError("Descreva a validacao funcional executada e o resultado observado.")
+    initialize_schema(db_path)
+    with _connection(db_path) as connection:
+        row = connection.execute(
+            "SELECT operational_packet_json FROM runs WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+    if row is None:
+        raise ValueError("Run nao encontrada.")
+    packet = json.loads(row["operational_packet_json"] or "{}")
+    qa_status = "functional_qa_passed" if passed else "functional_qa_failed"
+    acceptance = "product_accepted" if passed else "functional_qa_failed"
+    updated_packet = {
+        **packet,
+        "product_acceptance_status": acceptance,
+        "functional_qa": {
+            "status": qa_status,
+            "evidence": evidence[:4000],
+            "decided_by": decided_by.strip()[:120] or "owner",
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    update_run_status(
+        run_id,
+        status="ended" if passed else "return_requested",
+        operational_packet=updated_packet,
+        db_path=db_path,
+    )
+    record_workflow_checkpoint(
+        thread_id=run_id,
+        run_id=run_id,
+        stage=qa_status,
+        status="product_accepted" if passed else "return_to_operator",
+        payload={
+            "evidence": evidence[:4000],
+            "decided_by": decided_by.strip()[:120] or "owner",
+        },
+        db_path=db_path,
+    )
+    return {
+        "run_id": run_id,
+        "status": "ended" if passed else "return_requested",
+        "product_acceptance_status": acceptance,
+        "functional_qa": updated_packet["functional_qa"],
+    }
 
 
 def run_flow_snapshot(
@@ -1383,7 +1858,8 @@ def run_flow_snapshot(
             SELECT run_id, project_id, initiative_id, user_goal, active_flow,
                    execution_tier, status, cos_decision, route_decision,
                    trace_id, observed_cost_usd, observed_tokens, trace_url,
-                   observability_status, observability_error, observability_synced_at
+                   observability_status, observability_error, observability_synced_at,
+                   operational_packet_json
             FROM runs WHERE run_id=?
             """,
             (run_id,),
@@ -1417,8 +1893,11 @@ def run_flow_snapshot(
             for index in range(len(agents) - 1)
         ]
         link_source = "legacy_output_sequence"
+    run_snapshot = dict(run) if run else None
+    if run_snapshot:
+        run_snapshot["operational_packet"] = json.loads(run_snapshot.pop("operational_packet_json") or "{}")
     return {
-        "run": dict(run) if run else None,
+        "run": run_snapshot,
         "agents": agents,
         "handoffs": handoffs,
         "links": links,
@@ -1547,8 +2026,14 @@ def board_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
     runs = recent_runs_snapshot(limit=100, include_validation=False, db_path=db_path)["runs"]
     requests = execution_request_snapshot(db_path=db_path)["requests"]
     demands = automation_demand_snapshot(db_path)["demands"]
+    decision_snapshot = human_decision_snapshot(db_path)
     pending_decisions = {
-        item["run_id"] for item in human_decision_snapshot(db_path)["decisions"] if item["status"] == "pending"
+        item["run_id"] for item in decision_snapshot["decisions"] if item.get("is_actionable")
+    }
+    blocked_decisions = {
+        item["run_id"]
+        for item in decision_snapshot["decisions"]
+        if item.get("governance_status") in {"blocked", "legacy"}
     }
     request_by_run = {item["run_id"]: item["status"] for item in requests}
     columns = {key: [] for key in ("planned", "in_progress", "human_decision", "approval", "done", "blocked")}
@@ -1570,6 +2055,10 @@ def board_snapshot(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any]:
         card = {**run, "request_status": request_status}
         if run["run_id"] in pending_decisions:
             column = "human_decision"
+        elif run["run_id"] in blocked_decisions:
+            column = "blocked"
+        elif run.get("product_acceptance_status") == "functional_qa_pending":
+            column = "in_progress"
         elif request_status in {
             "pending_approval", "approved_for_dry_run", "awaiting_patch",
             "awaiting_apply_approval", "approved_for_apply", "applied_validated",

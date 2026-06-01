@@ -95,29 +95,55 @@ def _resolve_model(agent_name: str):
 # ---------------------------------------------------------------------------
 # Prompt caching helpers (Anthropic provider only)
 #
-# Cached block: output_contract_instruction — stable per agent per session.
-# The cache is ephemeral (5-min TTL on Anthropic).  Effective cache hits
-# require repeated calls with an identical prefix; the minimum cacheable
-# token count is 1 024 (Sonnet) / 2 048 (Haiku).
+# Cached block: output_contract_instruction + agent base prompt.
+# Combined these reliably exceed the 1 024-token Sonnet / 2 048-token Haiku
+# minimum for ephemeral cache eligibility (5-min TTL on Anthropic).
 #
 # What is NOT cached: user_goal, cmo, workspace context, agent context —
 # all vary per run and must remain in the dynamic HumanMessage.
 # ---------------------------------------------------------------------------
 
-def _make_agent_messages(prompt: str, agent_name: str) -> list:
-    """Structured messages with cache_control on the stable output contract."""
+_AGENT_PROMPT_FILE: dict[str, str] = {
+    "discovery": "discovery.txt",
+    "product": "product.txt",
+    "qa_planning": "qa.txt",
+    "engineering": "engineering.txt",
+    "operator": "operator.txt",
+    "engineering_review": "engineering_review.txt",
+    "qa_execution": "qa_execution.txt",
+    "writing": "writing.txt",
+    "ux_ui": "ux_ui.txt",
+    "privacy": "privacy.txt",
+    "appsec": "appsec.txt",
+    "cos": "cos.txt",
+}
+
+
+def _stable_system_block(agent_name: str) -> str:
+    """Return the stable, cacheable system block: contract + base prompt."""
     contract = output_contract_instruction(agent_name)
+    filename = _AGENT_PROMPT_FILE.get(agent_name, "")
+    if filename:
+        try:
+            base_prompt = read_prompt(filename)
+            return f"{contract}\n\n{base_prompt}"
+        except OSError:
+            pass
+    return contract
+
+
+def _make_agent_messages(prompt: str, agent_name: str) -> list:
+    """Structured messages with cache_control on the stable system block."""
     return [
         SystemMessage(content=[
-            {"type": "text", "text": contract, "cache_control": {"type": "ephemeral"}}
+            {"type": "text", "text": _stable_system_block(agent_name), "cache_control": {"type": "ephemeral"}}
         ]),
         HumanMessage(content=prompt),
     ]
 
 
 def _make_repair_messages(prompt: str, agent_name: str, raw_content: str, compact_errors: str) -> list:
-    """Repair messages reuse the cached contract block."""
-    contract = output_contract_instruction(agent_name)
+    """Repair messages reuse the cached system block."""
     body = (
         f"{prompt}\n\n"
         "CORRECAO DE SCHEMA OBRIGATORIA:\n"
@@ -129,10 +155,19 @@ def _make_repair_messages(prompt: str, agent_name: str, raw_content: str, compac
     )
     return [
         SystemMessage(content=[
-            {"type": "text", "text": contract, "cache_control": {"type": "ephemeral"}}
+            {"type": "text", "text": _stable_system_block(agent_name), "cache_control": {"type": "ephemeral"}}
         ]),
         HumanMessage(content=body),
     ]
+
+
+def _extract_cache_tokens(response: Any) -> dict[str, int]:
+    """Extract Anthropic prompt-cache token counts from an AIMessage response."""
+    usage = getattr(response, "usage_metadata", None) or {}
+    return {
+        "cache_creation_input_tokens": int(usage.get("cache_creation_input_tokens", 0)),
+        "cache_read_input_tokens": int(usage.get("cache_read_input_tokens", 0)),
+    }
 
 
 def read_prompt(name: str) -> str:
@@ -147,12 +182,17 @@ class ValidatedResponse:
         validation_errors: list[str],
         *,
         repair_attempted: bool = False,
+        cache_tokens: dict[str, int] | None = None,
     ):
         self.raw_content = raw_content
         self.envelope = envelope
         self.validation_errors = validation_errors
         self.repair_attempted = repair_attempted
         self.content = envelope.artifact_markdown
+        self.cache_tokens: dict[str, int] = cache_tokens or {
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
 
 
 def invoke_validated(agent_name: str, prompt: str) -> ValidatedResponse:
@@ -163,9 +203,10 @@ def invoke_validated(agent_name: str, prompt: str) -> ValidatedResponse:
         first_input = _make_agent_messages(prompt, agent_name)
 
     raw_response = m.invoke(first_input)
+    cache_tokens = _extract_cache_tokens(raw_response) if not USE_MOCK_MODEL else {}
     envelope, validation_errors = safe_parse_agent_output(raw_response.content, agent_name)
     if not validation_errors:
-        return ValidatedResponse(raw_response.content, envelope, [])
+        return ValidatedResponse(raw_response.content, envelope, [], cache_tokens=cache_tokens)
 
     compact_errors = " | ".join(" ".join(error.split())[:500] for error in validation_errors)
     if USE_MOCK_MODEL:
@@ -182,6 +223,17 @@ def invoke_validated(agent_name: str, prompt: str) -> ValidatedResponse:
         repair_input = _make_repair_messages(prompt, agent_name, raw_response.content, compact_errors)
 
     repaired_response = m.invoke(repair_input)
+    repair_cache_tokens = _extract_cache_tokens(repaired_response) if not USE_MOCK_MODEL else {}
+    merged_cache = {
+        "cache_creation_input_tokens": (
+            cache_tokens.get("cache_creation_input_tokens", 0)
+            + repair_cache_tokens.get("cache_creation_input_tokens", 0)
+        ),
+        "cache_read_input_tokens": (
+            cache_tokens.get("cache_read_input_tokens", 0)
+            + repair_cache_tokens.get("cache_read_input_tokens", 0)
+        ),
+    }
     repaired_envelope, repaired_errors = safe_parse_agent_output(repaired_response.content, agent_name)
     combined_raw = (
         f"INITIAL_ATTEMPT:\n{raw_response.content}\n\n"
@@ -192,6 +244,7 @@ def invoke_validated(agent_name: str, prompt: str) -> ValidatedResponse:
         repaired_envelope,
         repaired_errors,
         repair_attempted=True,
+        cache_tokens=merged_cache,
     )
 
 def format_agent_context(agent_name: str, state: SquadState) -> str:
@@ -288,6 +341,7 @@ def with_orchestrator_check(
         validation_errors=response.validation_errors,
     )
     checks[agent_name]["repair_attempted"] = response.repair_attempted
+    prev_cache = state.get("cache_metrics") or {}
     return {
         **payload,
         "orchestrator_checks": checks,
@@ -298,6 +352,10 @@ def with_orchestrator_check(
         "raw_model_outputs": {
             **state.get("raw_model_outputs", {}),
             agent_name: response.raw_content,
+        },
+        "cache_metrics": {
+            **prev_cache,
+            agent_name: response.cache_tokens,
         },
     }
 

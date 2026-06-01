@@ -2337,5 +2337,79 @@ class OperationalContractsTest(unittest.TestCase):
             self.assertIn(er_ece, ("C1", "C2", "C3"), f"Unexpected ECE value: {er_ece!r}")
 
 
+    def test_stable_system_block_includes_base_prompt(self):
+        """_stable_system_block must combine the output contract with the agent's prompt file."""
+        from app.graph import _stable_system_block, _AGENT_PROMPT_FILE
+
+        # Every mapped agent must produce a block that includes its prompt file content.
+        for agent_name, filename in _AGENT_PROMPT_FILE.items():
+            block = _stable_system_block(agent_name)
+            # The block must contain the output-contract sentinel phrase.
+            self.assertIn("CONTRATO DE SAIDA DO RUNTIME", block,
+                          f"Output contract missing from block for {agent_name!r}")
+            # And it must include at least part of the base prompt file.
+            prompt_path = Path(__file__).resolve().parent.parent / "app" / "prompts" / filename
+            if prompt_path.exists():
+                first_line = prompt_path.read_text(encoding="utf-8").splitlines()[0].strip()
+                if first_line:
+                    self.assertIn(first_line[:50], block,
+                                  f"Base prompt content missing from block for {agent_name!r}")
+
+    def test_cache_metrics_persisted_in_record_run(self):
+        """cache_metrics_json column must be written and retrievable after record_run."""
+        import tempfile
+        from app.operational_store import record_run_started, record_run
+        import sqlite3
+
+        with tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False) as f:
+            db = f.name
+
+        try:
+            run_id = "test-cache-metrics-001"
+            record_run_started(
+                run_id=run_id, user_goal="test", project_id="p", initiative_id="i",
+                memory_namespace="p:i", active_flow="docs",
+                execution_policy={}, trace_id="", db_path=db,
+            )
+            result = {
+                "route_status": "complete",
+                "structured_outputs": {},
+                "orchestrator_checks": {},
+                "work_scope": {},
+                "execution_policy": {},
+                "operational_packet": {},
+                "cos_decision": "",
+                "cos_route_action": "",
+                "route_decision": "",
+                "human_escalation_created": False,
+                "active_flow": "docs",
+                "cache_metrics": {
+                    "product": {"cache_creation_input_tokens": 512, "cache_read_input_tokens": 1024},
+                    "engineering": {"cache_creation_input_tokens": 0, "cache_read_input_tokens": 2048},
+                },
+            }
+            record_run(result, run_id=run_id, user_goal="test", duration_ms=100, db_path=db)
+
+            import json as _json
+            conn = sqlite3.connect(db)
+            try:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT cache_metrics_json FROM runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(row)
+            stored = _json.loads(row["cache_metrics_json"])
+            self.assertEqual(stored["product"]["cache_read_input_tokens"], 1024)
+            self.assertEqual(stored["engineering"]["cache_creation_input_tokens"], 0)
+        finally:
+            import os
+            try:
+                os.unlink(db)
+            except PermissionError:
+                pass
+
+
 if __name__ == "__main__":
     unittest.main()
