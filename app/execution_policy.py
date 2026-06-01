@@ -62,9 +62,10 @@ def build_execution_policy(
     if SENSITIVE_GATES.intersection(on_demand_agents):
         tier = "controlled"
     budget = TIER_BUDGETS[tier]
+    enforcing_tiers = {"quick", "standard", "full"}
     return {
         "execution_tier": tier,
-        "enforcement_mode": "advisory",
+        "enforcement_mode": "enforcing" if tier in enforcing_tiers else "advisory",
         "planned_agents": agents,
         "planned_agent_count": len(agents),
         **budget,

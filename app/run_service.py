@@ -6,7 +6,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -74,21 +74,28 @@ def _invoke_graph_with_budget(
 ) -> dict[str, Any]:
     """Invoke the graph with optional hard budget enforcement.
 
-    enforcement_mode="advisory"  — runs to completion (current default).
-    enforcement_mode="enforcing" — stops the graph and sets budget_exceeded=True
-                                   once structured_outputs count hits max_agent_outputs.
+    enforcement_mode="advisory"  — runs to completion.
+    enforcement_mode="enforcing" — stops early and sets budget_exceeded=True when
+                                   any of these limits is hit:
+                                     • structured_outputs count >= max_agent_outputs
+                                     • elapsed wall time   >= max_duration_seconds
+                                     • retry_state total_retries >= max_agent_outputs
     """
     enforcement = policy.get("enforcement_mode", "advisory")
     max_outputs = int(policy.get("max_agent_outputs", 10))
+    max_seconds = float(policy.get("max_duration_seconds", 3600))
 
     if enforcement != "enforcing":
         return graph.invoke(initial_state, config=config)
 
+    start = monotonic()
     final_state: dict[str, Any] = {}
     for snapshot in graph.stream(initial_state, config=config, stream_mode="values"):
         final_state = snapshot
         output_count = len(snapshot.get("structured_outputs") or {})
-        if output_count >= max_outputs:
+        total_retries = int((snapshot.get("retry_state") or {}).get("total_retries", 0))
+        elapsed = monotonic() - start
+        if output_count >= max_outputs or elapsed >= max_seconds or total_retries >= max_outputs:
             final_state = {**snapshot, "budget_exceeded": True}
             break
     return final_state or {}
@@ -281,6 +288,8 @@ def _execute_manual_run(
         result = _invoke_graph_with_budget(graph, initial_state, run_config, policy)
 
         if result.get("budget_exceeded"):
+            # Stamp the route_status so record_run stores the correct terminal state.
+            result = {**result, "route_status": "budget_exceeded"}
             update_run_status(run_id, status="budget_exceeded", db_path=db_path)
 
         # Persist state so a resumed run after human escalation inherits context

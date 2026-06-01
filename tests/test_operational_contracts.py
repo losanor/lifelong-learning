@@ -2169,5 +2169,105 @@ class OperationalContractsTest(unittest.TestCase):
             self.assertEqual(dirty_file.read_text(encoding="utf-8"), "")
 
 
+    def test_execution_policy_enforcing_for_quick_standard_full(self):
+        """quick/standard/full tiers must use enforcing mode; controlled uses advisory."""
+        from app.execution_policy import build_execution_policy
+
+        for flow, expected_mode in [
+            ("docs", "enforcing"),
+            ("review", "enforcing"),
+            ("bugfix", "enforcing"),
+            ("delivery_core", "enforcing"),
+        ]:
+            policy = build_execution_policy(flow, fixed_agents=["product"], on_demand_agents=[])
+            self.assertEqual(
+                policy["enforcement_mode"], expected_mode,
+                f"Flow '{flow}' (tier={policy['execution_tier']}) should use '{expected_mode}'"
+            )
+
+        # controlled tier (triggered by sensitive gate) stays advisory
+        policy_controlled = build_execution_policy(
+            "delivery_core", fixed_agents=["product"], on_demand_agents=["privacy"]
+        )
+        self.assertEqual(policy_controlled["execution_tier"], "controlled")
+        self.assertEqual(policy_controlled["enforcement_mode"], "advisory")
+
+    def test_invoke_graph_budget_stops_on_output_count(self):
+        """_invoke_graph_with_budget stops streaming when output count hits max_agent_outputs."""
+        from app.run_service import _invoke_graph_with_budget
+
+        states = [
+            {"structured_outputs": {"a": {}}},
+            {"structured_outputs": {"a": {}, "b": {}}},
+            {"structured_outputs": {"a": {}, "b": {}, "c": {}}},
+        ]
+
+        class FakeGraph:
+            def stream(self, state, config, stream_mode):
+                yield from states
+
+        result = _invoke_graph_with_budget(
+            FakeGraph(), {}, {}, {"enforcement_mode": "enforcing", "max_agent_outputs": 2, "max_duration_seconds": 3600}
+        )
+        self.assertTrue(result.get("budget_exceeded"), "Should stop when output count >= max_agent_outputs")
+        self.assertEqual(len(result["structured_outputs"]), 2)
+
+    def test_invoke_graph_budget_stops_on_duration(self):
+        """_invoke_graph_with_budget stops streaming when elapsed time exceeds max_duration_seconds."""
+        import time
+        from app.run_service import _invoke_graph_with_budget
+
+        call_count = 0
+
+        class SlowGraph:
+            def stream(self, state, config, stream_mode):
+                nonlocal call_count
+                while True:
+                    call_count += 1
+                    yield {"structured_outputs": {}}
+                    time.sleep(0.05)
+
+        result = _invoke_graph_with_budget(
+            SlowGraph(), {}, {}, {"enforcement_mode": "enforcing", "max_agent_outputs": 999, "max_duration_seconds": 0.1}
+        )
+        self.assertTrue(result.get("budget_exceeded"), "Should stop when duration limit exceeded")
+
+    def test_budget_exceeded_status_not_overwritten_by_record_run(self):
+        """budget_exceeded route_status must survive the record_run upsert."""
+        import tempfile
+        from app.operational_store import record_run_started, record_run, recent_runs_snapshot
+
+        with tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False) as f:
+            db = f.name
+
+        try:
+            run_id = "test-budget-overwrite-001"
+            record_run_started(
+                run_id=run_id, user_goal="test", project_id="p", initiative_id="i",
+                memory_namespace="p:i", active_flow="docs",
+                execution_policy={}, trace_id="", db_path=db,
+            )
+            result = {
+                "route_status": "budget_exceeded",
+                "structured_outputs": {},
+                "orchestrator_checks": {},
+                "work_scope": {},
+                "execution_policy": {},
+                "operational_packet": {},
+                "cos_decision": "",
+                "cos_route_action": "",
+                "route_decision": "",
+                "human_escalation_created": False,
+                "active_flow": "docs",
+            }
+            record_run(result, run_id=run_id, user_goal="test", duration_ms=100, db_path=db)
+            snapshot = recent_runs_snapshot(limit=10, db_path=db)
+            run = next(r for r in snapshot["runs"] if r["run_id"] == run_id)
+            self.assertEqual(run["status"], "budget_exceeded")
+        finally:
+            import os
+            os.unlink(db)
+
+
 if __name__ == "__main__":
     unittest.main()
