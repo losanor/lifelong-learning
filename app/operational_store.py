@@ -2354,6 +2354,18 @@ def metrics_snapshot(
             ORDER BY status ASC
             """
         ).fetchall()
+        repair_rows = connection.execute(
+            """
+            SELECT
+                ao.agent_name,
+                COUNT(*) AS total_outputs,
+                COALESCE(SUM(ao.repair_attempted), 0) AS repair_count
+            FROM agent_outputs ao
+            JOIN runs r ON r.run_id = ao.run_id
+            GROUP BY ao.agent_name
+            ORDER BY repair_count DESC, ao.agent_name ASC
+            """
+        ).fetchall()
 
     run_count = totals["run_count"]
     return {
@@ -2385,6 +2397,15 @@ def metrics_snapshot(
                 "request_count": row["request_count"],
             }
             for row in request_rows
+        ],
+        "repair_rates": [
+            {
+                "agent_name": row["agent_name"],
+                "total_outputs": row["total_outputs"],
+                "repair_count": row["repair_count"],
+                "repair_rate": round(row["repair_count"] / row["total_outputs"], 4) if row["total_outputs"] else 0.0,
+            }
+            for row in repair_rows
         ],
     }
 

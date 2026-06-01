@@ -35,6 +35,7 @@ from app.operational_store import (
     parking_lot_snapshot,
     pending_work_snapshot,
     promote_parking_lot_item,
+    record_functional_qa_result,
     record_automation_demand,
     recent_runs_snapshot,
     respond_human_decision,
@@ -115,6 +116,9 @@ class OperationsHandler(SimpleHTTPRequestHandler):
                     "human_decisions": human_decision_snapshot(self.db_path),
                 }
             )
+            return
+        if path == "/api/metrics":
+            self._json(metrics_snapshot(self.db_path, include_validation=False))
             return
         if path == "/api/board":
             self._json(board_snapshot(self.db_path))
@@ -199,6 +203,9 @@ class OperationsHandler(SimpleHTTPRequestHandler):
         parts = [unquote(part) for part in path.split("/") if part]
         if len(parts) == 4 and parts[:2] == ["api", "decisions"] and parts[3] == "respond":
             self._respond_human_decision(parts[2])
+            return
+        if len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "functional-qa":
+            self._record_functional_qa(parts[2])
             return
         if len(parts) == 4 and parts[:2] == ["api", "ideas"] and parts[3] == "promote":
             self._promote_idea(parts[2])
@@ -306,6 +313,21 @@ class OperationsHandler(SimpleHTTPRequestHandler):
                 db_path=self.db_path,
             )
             self._json(result)
+        except (ValueError, json.JSONDecodeError) as error:
+            self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+
+    def _record_functional_qa(self, run_id: str) -> None:
+        try:
+            payload = self._read_json()
+            self._json(
+                record_functional_qa_result(
+                    run_id,
+                    passed=bool(payload.get("passed")),
+                    evidence=str(payload.get("evidence", "")),
+                    decided_by=str(payload.get("by", "owner")),
+                    db_path=self.db_path,
+                )
+            )
         except (ValueError, json.JSONDecodeError) as error:
             self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
 

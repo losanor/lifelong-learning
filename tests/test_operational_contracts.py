@@ -2411,5 +2411,99 @@ class OperationalContractsTest(unittest.TestCase):
                 pass
 
 
+    def test_metrics_snapshot_includes_repair_rates(self):
+        """metrics_snapshot must include repair_rates per agent."""
+        import tempfile
+        from app.operational_store import record_run_started, record_run, metrics_snapshot
+
+        with tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False) as f:
+            db = f.name
+
+        try:
+            for i, repaired in enumerate([True, False, True]):
+                run_id = f"test-repair-rate-{i:03d}"
+                record_run_started(
+                    run_id=run_id, user_goal="test", project_id="p", initiative_id="i",
+                    memory_namespace="p:i", active_flow="docs",
+                    execution_policy={}, trace_id="", db_path=db,
+                )
+                product_output = {
+                    "schema_version": "squad.agent_output.v1",
+                    "agent_name": "product",
+                    "artifact_markdown": "Mock",
+                    "summary": {"ece": "C2", "agente_emissor": "product"},
+                    "operational_artifact": {
+                        "artifact_type": "brief",
+                        "target_refs": ["test"],
+                        "recommended_actions": ["continue"],
+                        "verification_steps": ["check"],
+                        "execution_ready": True,
+                        "human_checkpoint": None,
+                    },
+                }
+                result = {
+                    "route_status": "complete",
+                    "structured_outputs": {"product": product_output},
+                    "orchestrator_checks": {
+                        "product": {
+                            "repair_attempted": repaired,
+                            "ece": "C2",
+                            "schema_valid": True,
+                            "issues": [],
+                        }
+                    },
+                    "work_scope": {"project_id": "p", "initiative_id": "i", "memory_namespace": "p:i"},
+                    "execution_policy": {},
+                    "operational_packet": {},
+                    "cos_decision": "",
+                    "cos_route_action": "",
+                    "route_decision": "",
+                    "human_escalation_created": False,
+                    "active_flow": "docs",
+                }
+                record_run(result, run_id=run_id, user_goal="test", duration_ms=100, db_path=db)
+
+            snapshot = metrics_snapshot(db_path=db, include_validation=True)
+            self.assertIn("repair_rates", snapshot)
+            rates = {r["agent_name"]: r for r in snapshot["repair_rates"]}
+            self.assertIn("product", rates)
+            product = rates["product"]
+            self.assertEqual(product["total_outputs"], 3)
+            self.assertEqual(product["repair_count"], 2)
+            self.assertAlmostEqual(product["repair_rate"], 2 / 3, places=3)
+        finally:
+            import os
+            try:
+                os.unlink(db)
+            except PermissionError:
+                pass
+
+    def test_api_metrics_endpoint_returns_repair_rates(self):
+        """GET /api/metrics must return a repair_rates list."""
+        import tempfile
+        import threading
+        import urllib.request
+
+        db_path = Path("data") / "test_api_metrics_p2b.sqlite3"
+        if db_path.exists():
+            db_path.unlink()
+        try:
+            handler_class = make_handler(db_path)
+            import http.server
+            server = http.server.HTTPServer(("127.0.0.1", 0), handler_class)
+            port = server.server_address[1]
+            thread = threading.Thread(target=server.handle_request, daemon=True)
+            thread.start()
+            resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/api/metrics", timeout=5)
+            data = json.loads(resp.read())
+            self.assertIn("repair_rates", data, "repair_rates key missing from /api/metrics response")
+            self.assertIsInstance(data["repair_rates"], list)
+            self.assertIn("run_count", data)
+        finally:
+            server.server_close()
+            if db_path.exists():
+                db_path.unlink()
+
+
 if __name__ == "__main__":
     unittest.main()
