@@ -314,12 +314,14 @@ def _execute_manual_run(
             human_escalation_created=result.get("human_escalation_created", False),
         )
     except Exception as error:
+        import traceback as _tb
         update_run_status(
             run_id,
             status="failed",
             operational_packet={
                 "error": "A run falhou antes de produzir pacote operacional.",
                 "error_type": type(error).__name__,
+                "traceback": _tb.format_exc(),
             },
             db_path=db_path,
         )
