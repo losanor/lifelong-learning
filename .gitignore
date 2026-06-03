@@ -15,3 +15,7 @@ data/namespaces/
 data/eval_report*.json
 data/baseline_report*.json
 .langgraph_api/
+server.pid
+server_debug.log
+server_win.log
+server_win_err.log

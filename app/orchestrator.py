@@ -9,6 +9,7 @@ from app.structured_output import AgentOutputEnvelope
 
 
 AGENT_META = {
+    "vision": (Agente.VISION, Fase.IDEACAO),
     "discovery": (Agente.DISCOVERY, Fase.DISCOVERY),
     "product": (Agente.PRODUCT, Fase.PRODUTO),
     "qa_planning": (Agente.QA, Fase.QA),

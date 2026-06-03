@@ -28,6 +28,7 @@ class SquadState(TypedDict, total=False):
     compact_memory: str
     cycle_summary: str
 
+    vision_output: str
     discovery_output: str
     product_output: str
     qa_plan_output: str
@@ -40,6 +41,10 @@ class SquadState(TypedDict, total=False):
     privacy_output: str
     appsec_output: str
     cos_output: str
+    cos_intake_output: str
+    cos_intake_target: str
+    cos_intake_mode: str
+    cos_intake_rationale: str
 
     cos_decision: str
     cos_route_action: str
@@ -73,3 +78,9 @@ class SquadState(TypedDict, total=False):
     escalations: list[str]
 
     needs_discovery: bool
+    budget_exceeded: bool
+    cache_metrics: dict[str, dict]
+
+    task_spec: dict | None
+    execution_result: dict | None
+    executor_used: str

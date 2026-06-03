@@ -18,6 +18,9 @@ class MockModel:
     def invoke(self, prompt: str):
         prompt_lower = prompt.lower()
 
+        if "[[agent:vision]]" in prompt_lower:
+            return MockResponse(mock_agent_output("vision", mock_vision(), ece=ECE.C2))
+
         if "[[agent:discovery]]" in prompt_lower:
             return MockResponse(mock_agent_output("discovery", mock_discovery(), ece=ECE.C2))
 
@@ -61,9 +64,52 @@ class MockModel:
                     route_action="END_CYCLE",
                 )
             )
+
+        if "[[agent:cos_intake]]" in prompt_lower:
+            target = "product"
+            if "benchmark" in prompt_lower or "discovery" in prompt_lower:
+                target = "discovery"
+            elif "bug" in prompt_lower or "corrigir" in prompt_lower:
+                target = "engineering"
+            elif "review" in prompt_lower or "auditoria" in prompt_lower:
+                target = "engineering_review"
+            elif "documentar" in prompt_lower or "readme" in prompt_lower:
+                target = "writing"
+            return MockResponse(
+                f'{{"target":"{target}","rationale":"Mock CoS Intake revisou a rota inicial.","confidence":"C2"}}'
+            )
         
         return MockResponse(mock_default())
     
+
+def mock_vision() -> str:
+    return """
+# Mapa de Visão — MOCK
+
+## 1. Clarificação do Problema
+Problema central: direção estratégica indefinida antes de investir em execução.
+Urgência: média — sem prazo imediato, mas custo de inação cresce com o tempo.
+Custo de inação: esforço desperdiçado em execução sem visão clara.
+Restrições conhecidas: time pequeno, orçamento limitado, mercado não validado.
+
+## 2. Frameworks Aplicáveis
+- **Opção A**: Jobs-to-be-Done — foca no trabalho que o usuário está tentando realizar.
+- **Opção B**: Problem/Solution Fit — valida dor antes de construir solução.
+
+## 3. Síntese de Caminhos
+- **Conservador**: explorar o problema com entrevistas antes de qualquer build.
+- **Balanceado**: prototipagem rápida + feedback de 5 usuários em 2 semanas.
+- **Agressivo**: lançar MVP mínimo em 1 semana e medir abandono.
+
+## 4. Mapa de Visão
+- Problema: nebuloso — requer validação de hipóteses antes de execução.
+- Restrições: nenhuma restrição técnica crítica identificada.
+- Suposições: usuário existe e tem a dor descrita.
+- Dados faltantes: tamanho do mercado, disposição a pagar, alternativas existentes.
+- Riscos: executar sem validar hipótese central → retrabalho.
+- ECE: C2 — direção parcialmente clara; recomenda-se validação antes de entregar.
+"""
+
 
 def mock_discovery() -> str:
     return """
@@ -305,13 +351,13 @@ Organizar a documentacao solicitada sem alterar escopo.
 
 def mock_ux_ui() -> str:
     return """
-# UX/UI Gate - MOCK
+# UX/UI & Conversation Gate - MOCK
 
 ## Parecer
-Fluxo principal revisado e factivel com componentes simples.
+Fluxo principal visual ou conversacional revisado e factivel com componentes simples.
 
 ## Proximo Passo
-QA Planning deve transformar estados e interacoes em criterios verificaveis.
+QA Planning deve transformar estados, transicoes e interacoes em criterios verificaveis.
 """
 
 

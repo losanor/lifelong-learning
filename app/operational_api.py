@@ -29,12 +29,14 @@ from app.operational_store import (
     cost_snapshot,
     create_parking_lot_item,
     execution_request_snapshot,
+    executor_runs_snapshot,
     human_decision_snapshot,
     metrics_snapshot,
     performance_history_snapshot,
     parking_lot_snapshot,
     pending_work_snapshot,
     promote_parking_lot_item,
+    record_functional_qa_result,
     record_automation_demand,
     recent_runs_snapshot,
     respond_human_decision,
@@ -116,6 +118,9 @@ class OperationsHandler(SimpleHTTPRequestHandler):
                 }
             )
             return
+        if path == "/api/metrics":
+            self._json(metrics_snapshot(self.db_path, include_validation=False))
+            return
         if path == "/api/board":
             self._json(board_snapshot(self.db_path))
             return
@@ -153,6 +158,24 @@ class OperationsHandler(SimpleHTTPRequestHandler):
                     "decision_log": read_scoped_or_seed("decision_log.md", namespace)[-6000:],
                 }
             )
+            return
+        if path == "/api/executor/status":
+            from app.executor.registry import get_registry
+            from app.executor.base import TaskSpec
+            registry = get_registry()
+            adapters = []
+            for name, adapter in registry.items():
+                low_spec = TaskSpec(objective="probe", complexity="low")
+                adapters.append({
+                    "name": name,
+                    "available": adapter.is_available(),
+                    "estimated_cost_low_task": adapter.estimated_cost(low_spec),
+                })
+            self._json({"adapters": adapters})
+            return
+        if path == "/api/executor/runs":
+            run_id = parse_qs(urlparse(self.path).query).get("run_id", [""])[0][:120]
+            self._json(executor_runs_snapshot(run_id=run_id or None, db_path=self.db_path))
             return
         parts = [unquote(part) for part in path.split("/") if part]
         if len(parts) == 3 and parts[:2] == ["api", "requests"]:
@@ -199,6 +222,9 @@ class OperationsHandler(SimpleHTTPRequestHandler):
         parts = [unquote(part) for part in path.split("/") if part]
         if len(parts) == 4 and parts[:2] == ["api", "decisions"] and parts[3] == "respond":
             self._respond_human_decision(parts[2])
+            return
+        if len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "functional-qa":
+            self._record_functional_qa(parts[2])
             return
         if len(parts) == 4 and parts[:2] == ["api", "ideas"] and parts[3] == "promote":
             self._promote_idea(parts[2])
@@ -306,6 +332,21 @@ class OperationsHandler(SimpleHTTPRequestHandler):
                 db_path=self.db_path,
             )
             self._json(result)
+        except (ValueError, json.JSONDecodeError) as error:
+            self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+
+    def _record_functional_qa(self, run_id: str) -> None:
+        try:
+            payload = self._read_json()
+            self._json(
+                record_functional_qa_result(
+                    run_id,
+                    passed=bool(payload.get("passed")),
+                    evidence=str(payload.get("evidence", "")),
+                    decided_by=str(payload.get("by", "owner")),
+                    db_path=self.db_path,
+                )
+            )
         except (ValueError, json.JSONDecodeError) as error:
             self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
 

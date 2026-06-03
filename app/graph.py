@@ -1,5 +1,6 @@
 from pathlib import Path
-from langchain.chat_models import init_chat_model
+import json
+import re
 from langgraph.graph import StateGraph, START, END
 from app.state import SquadState
 from app.config import ANTHROPIC_API_KEY
@@ -25,6 +26,7 @@ from app.structured_output import (
     CoSOutputEnvelope,
     safe_parse_agent_output,
     with_output_contract,
+    output_contract_instruction,
 )
 from app.intake import decide_intake
 from app.workspace_context import capture_workspace_context, format_workspace_context
@@ -35,15 +37,140 @@ from app.human_escalation import (
     build_escalation_reason,
     build_required_decision,
 )
-
+from app.execution_engine import invoke_executor
+from app.operational_store import DEFAULT_DB_PATH
 
 
 BASE_DIR = Path(__file__).resolve().parent
 
+# ---------------------------------------------------------------------------
+# Model initialisation — tiered by agent reasoning demand
+# ---------------------------------------------------------------------------
+# Haiku: light/deterministic nodes (routing, collection, writing, gates)
+# Sonnet: reasoning nodes (product, engineering, review, qa, cos)
+#
+# MODEL_BY_AGENT is only populated in real-model mode. In mock mode it stays
+# empty so invoke_validated falls back to the module-level `model` variable,
+# which tests also patch directly.
+# ---------------------------------------------------------------------------
+
+_HAIKU = "claude-haiku-4-5-20251001"
+_SONNET = "claude-sonnet-4-6"
+
+_HAIKU_AGENTS = {
+    "discovery", "writing", "qa_planning", "operator",
+    "ux_ui", "privacy", "appsec", "cos_intake",
+}
+_SONNET_AGENTS = {
+    "vision", "product", "engineering", "engineering_review", "qa_execution", "cos",
+}
+
+MODEL_BY_AGENT: dict = {}
+
 if USE_MOCK_MODEL:
     model = MockModel()
+    _DEFAULT_MODEL = model
 else:
-    model = init_chat_model("claude-sonnet-4-6", temperature=0)
+    from langchain_anthropic import ChatAnthropic
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    _haiku_model = ChatAnthropic(model=_HAIKU, temperature=0, api_key=ANTHROPIC_API_KEY)
+    _sonnet_model = ChatAnthropic(model=_SONNET, temperature=0, api_key=ANTHROPIC_API_KEY)
+    model = _sonnet_model  # default (backward-compat with tests that patch graph_module.model)
+    _DEFAULT_MODEL = _sonnet_model
+    MODEL_BY_AGENT = {agent: _haiku_model for agent in _HAIKU_AGENTS}
+    MODEL_BY_AGENT.update({agent: _sonnet_model for agent in _SONNET_AGENTS})
+
+
+def _resolve_model(agent_name: str):
+    """Returns the right model for agent_name.
+
+    Falls back to the module-level `model` whenever it has been monkey-patched
+    (e.g. in tests), so existing patch.object(graph_module, 'model', ...) still
+    works without modification.
+    """
+    if model is not _DEFAULT_MODEL:
+        return model
+    return MODEL_BY_AGENT.get(agent_name, model)
+
+
+# ---------------------------------------------------------------------------
+# Prompt caching helpers (Anthropic provider only)
+#
+# Cached block: output_contract_instruction + agent base prompt.
+# Combined these reliably exceed the 1 024-token Sonnet / 2 048-token Haiku
+# minimum for ephemeral cache eligibility (5-min TTL on Anthropic).
+#
+# What is NOT cached: user_goal, cmo, workspace context, agent context —
+# all vary per run and must remain in the dynamic HumanMessage.
+# ---------------------------------------------------------------------------
+
+_AGENT_PROMPT_FILE: dict[str, str] = {
+    "vision": "vision.txt",
+    "discovery": "discovery.txt",
+    "product": "product.txt",
+    "qa_planning": "qa.txt",
+    "engineering": "engineering.txt",
+    "operator": "operator.txt",
+    "engineering_review": "engineering_review.txt",
+    "qa_execution": "qa_execution.txt",
+    "writing": "writing.txt",
+    "ux_ui": "ux_ui.txt",
+    "privacy": "privacy.txt",
+    "appsec": "appsec.txt",
+    "cos": "cos.txt",
+}
+
+
+def _stable_system_block(agent_name: str) -> str:
+    """Return the stable, cacheable system block: contract + base prompt."""
+    contract = output_contract_instruction(agent_name)
+    filename = _AGENT_PROMPT_FILE.get(agent_name, "")
+    if filename:
+        try:
+            base_prompt = read_prompt(filename)
+            return f"{contract}\n\n{base_prompt}"
+        except OSError:
+            pass
+    return contract
+
+
+def _make_agent_messages(prompt: str, agent_name: str) -> list:
+    """Structured messages with cache_control on the stable system block."""
+    return [
+        SystemMessage(content=[
+            {"type": "text", "text": _stable_system_block(agent_name), "cache_control": {"type": "ephemeral"}}
+        ]),
+        HumanMessage(content=prompt),
+    ]
+
+
+def _make_repair_messages(prompt: str, agent_name: str, raw_content: str, compact_errors: str) -> list:
+    """Repair messages reuse the cached system block."""
+    body = (
+        f"{prompt}\n\n"
+        "CORRECAO DE SCHEMA OBRIGATORIA:\n"
+        "A resposta anterior foi rejeitada pelo runtime. Preserve o conteudo util do "
+        "artefato, mas corrija estritamente o JSON conforme o contrato acima.\n"
+        f"Erros de validacao: {compact_errors}\n\n"
+        "Resposta anterior a corrigir:\n"
+        f"{raw_content[:5000]}"
+    )
+    return [
+        SystemMessage(content=[
+            {"type": "text", "text": _stable_system_block(agent_name), "cache_control": {"type": "ephemeral"}}
+        ]),
+        HumanMessage(content=body),
+    ]
+
+
+def _extract_cache_tokens(response: Any) -> dict[str, int]:
+    """Extract Anthropic prompt-cache token counts from an AIMessage response."""
+    usage = getattr(response, "usage_metadata", None) or {}
+    return {
+        "cache_creation_input_tokens": int(usage.get("cache_creation_input_tokens", 0)),
+        "cache_read_input_tokens": int(usage.get("cache_read_input_tokens", 0)),
+    }
 
 
 def read_prompt(name: str) -> str:
@@ -58,31 +185,58 @@ class ValidatedResponse:
         validation_errors: list[str],
         *,
         repair_attempted: bool = False,
+        cache_tokens: dict[str, int] | None = None,
     ):
         self.raw_content = raw_content
         self.envelope = envelope
         self.validation_errors = validation_errors
         self.repair_attempted = repair_attempted
         self.content = envelope.artifact_markdown
+        self.cache_tokens: dict[str, int] = cache_tokens or {
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
 
 
 def invoke_validated(agent_name: str, prompt: str) -> ValidatedResponse:
-    raw_response = model.invoke(with_output_contract(prompt, agent_name))
+    m = _resolve_model(agent_name)
+    if USE_MOCK_MODEL:
+        first_input = with_output_contract(prompt, agent_name)
+    else:
+        first_input = _make_agent_messages(prompt, agent_name)
+
+    raw_response = m.invoke(first_input)
+    cache_tokens = _extract_cache_tokens(raw_response) if not USE_MOCK_MODEL else {}
     envelope, validation_errors = safe_parse_agent_output(raw_response.content, agent_name)
     if not validation_errors:
-        return ValidatedResponse(raw_response.content, envelope, [])
+        return ValidatedResponse(raw_response.content, envelope, [], cache_tokens=cache_tokens)
 
     compact_errors = " | ".join(" ".join(error.split())[:500] for error in validation_errors)
-    repair_prompt = (
-        f"{with_output_contract(prompt, agent_name)}\n\n"
-        "CORRECAO DE SCHEMA OBRIGATORIA:\n"
-        "A resposta anterior foi rejeitada pelo runtime. Preserve o conteudo util do "
-        "artefato, mas corrija estritamente o JSON conforme o contrato acima.\n"
-        f"Erros de validacao: {compact_errors}\n\n"
-        "Resposta anterior a corrigir:\n"
-        f"{raw_response.content[:5000]}"
-    )
-    repaired_response = model.invoke(repair_prompt)
+    if USE_MOCK_MODEL:
+        repair_input = (
+            f"{with_output_contract(prompt, agent_name)}\n\n"
+            "CORRECAO DE SCHEMA OBRIGATORIA:\n"
+            "A resposta anterior foi rejeitada pelo runtime. Preserve o conteudo util do "
+            "artefato, mas corrija estritamente o JSON conforme o contrato acima.\n"
+            f"Erros de validacao: {compact_errors}\n\n"
+            "Resposta anterior a corrigir:\n"
+            f"{raw_response.content[:5000]}"
+        )
+    else:
+        repair_input = _make_repair_messages(prompt, agent_name, raw_response.content, compact_errors)
+
+    repaired_response = m.invoke(repair_input)
+    repair_cache_tokens = _extract_cache_tokens(repaired_response) if not USE_MOCK_MODEL else {}
+    merged_cache = {
+        "cache_creation_input_tokens": (
+            cache_tokens.get("cache_creation_input_tokens", 0)
+            + repair_cache_tokens.get("cache_creation_input_tokens", 0)
+        ),
+        "cache_read_input_tokens": (
+            cache_tokens.get("cache_read_input_tokens", 0)
+            + repair_cache_tokens.get("cache_read_input_tokens", 0)
+        ),
+    }
     repaired_envelope, repaired_errors = safe_parse_agent_output(repaired_response.content, agent_name)
     combined_raw = (
         f"INITIAL_ATTEMPT:\n{raw_response.content}\n\n"
@@ -93,6 +247,7 @@ def invoke_validated(agent_name: str, prompt: str) -> ValidatedResponse:
         repaired_envelope,
         repaired_errors,
         repair_attempted=True,
+        cache_tokens=merged_cache,
     )
 
 def format_agent_context(agent_name: str, state: SquadState) -> str:
@@ -189,6 +344,7 @@ def with_orchestrator_check(
         validation_errors=response.validation_errors,
     )
     checks[agent_name]["repair_attempted"] = response.repair_attempted
+    prev_cache = state.get("cache_metrics") or {}
     return {
         **payload,
         "orchestrator_checks": checks,
@@ -199,6 +355,10 @@ def with_orchestrator_check(
         "raw_model_outputs": {
             **state.get("raw_model_outputs", {}),
             agent_name: response.raw_content,
+        },
+        "cache_metrics": {
+            **prev_cache,
+            agent_name: response.cache_tokens,
         },
     }
 
@@ -254,6 +414,49 @@ def next_after_check(state: SquadState, agent_name: str, next_node: str) -> str:
     return next_node
 
 
+def _build_task_spec_dict(artifact: Any, state: SquadState) -> dict:
+    """Build a TaskSpec-compatible dict from an operational_artifact envelope."""
+    engineering = state.get("engineering_output", "")
+    active_flow = state.get("active_flow", "delivery_core")
+    complexity = "high" if active_flow in {"delivery_core", "delivery_with_discovery"} else "medium"
+    objective = (
+        artifact.recommended_actions[0]
+        if artifact.recommended_actions
+        else state["user_goal"]
+    )
+    constraints = [f"Engineering spec: {engineering[:400]}"] if engineering else []
+    return {
+        "objective": objective,
+        "target_files": list(artifact.target_refs),
+        "acceptance_criteria": list(artifact.verification_steps),
+        "validation_commands": list(artifact.verification_steps),
+        "constraints": constraints,
+        "complexity": complexity,
+    }
+
+
+def _execution_result_context(state: SquadState) -> str:
+    """Inject executor evidence into agent prompts when available."""
+    result = state.get("execution_result")
+    if not result:
+        return ""
+    executor = state.get("executor_used") or "unknown"
+    success = result.get("success", False)
+    files = ", ".join(result.get("files_changed", [])) or "(none)"
+    output = (result.get("output") or "")[:1000]
+    errors = (result.get("errors") or "")[:400]
+    lines = [
+        f"\n## Executor Result ({executor})",
+        f"Status: {'success' if success else 'failed'}",
+        f"Files changed: {files}",
+    ]
+    if output:
+        lines.append(f"Output:\n{output}")
+    if errors:
+        lines.append(f"Errors:\n{errors}")
+    return "\n".join(lines) + "\n\n"
+
+
 def intake_node(state: SquadState):
     override = state.get("needs_discovery") if "needs_discovery" in state else None
     intake = decide_intake(
@@ -277,8 +480,10 @@ def intake_node(state: SquadState):
 
 
 def route_after_intake(state: SquadState) -> str:
+    """First operational agent after cos_intake (not counting vision which runs before)."""
     active_flow = state.get("active_flow", "delivery_core")
     first_node_by_flow = {
+        "ideation": "cos",
         "delivery_core": "product",
         "delivery_with_discovery": "discovery",
         "bugfix": "engineering",
@@ -288,6 +493,165 @@ def route_after_intake(state: SquadState) -> str:
         "research_only": "discovery",
     }
     return first_node_by_flow.get(active_flow, "product")
+
+
+def _route_after_intake_node(state: SquadState) -> str:
+    """Conditional edge: intake → vision (ideation) or cos_intake (all other flows)."""
+    if state.get("active_flow") == "ideation":
+        return "vision"
+    return "cos_intake"
+
+
+def _agent_display_name(agent_name: str) -> str:
+    names = {
+        "vision": "Vision Agent",
+        "discovery": "Discovery",
+        "product": "Product Lead",
+        "engineering": "Engineering Lead",
+        "engineering_review": "Engineering Review",
+        "writing": "Writing / Documentation",
+        "cos": "CoS / Orchestrator",
+    }
+    return names.get(agent_name, agent_name)
+
+
+INITIAL_TARGETS = {"discovery", "product", "engineering", "engineering_review", "writing", "cos"}
+
+
+def _cos_intake_llm_reasons(state: SquadState, default_target: str) -> list[str]:
+    goal = state["user_goal"].casefold()
+    document = state.get("reference_document") or {}
+    policy = state.get("execution_policy", {})
+    reasons: list[str] = []
+    if document.get("document_ref") and state.get("active_flow") in {"delivery_core", "delivery_with_discovery"}:
+        reasons.append("documento de referencia em entrega")
+    if policy.get("execution_tier") == "controlled":
+        reasons.append("tier controlado")
+    if state.get("active_flow") == "docs" and re.search(r"\b(criar|construir|implementar|desenvolver|bot|mvp|feature)\b", goal):
+        reasons.append("possivel conflito entre documentacao e entrega")
+    if state.get("active_flow") == "delivery_core" and re.search(r"\b(benchmark|mercado|concorrente|validar hipotese|validar hipótese|discovery)\b", goal):
+        reasons.append("entrega com sinais de discovery")
+    if re.search(r"\b(talvez|nao sei|não sei|duvida|dúvida|incerto|ambig[uo]o|definir caminho)\b", goal):
+        reasons.append("objetivo ambiguo")
+    if default_target not in INITIAL_TARGETS:
+        reasons.append("rota inicial fora do conjunto seguro")
+    return reasons
+
+
+def _extract_json_object(text: str) -> dict:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        if not match:
+            raise
+        return json.loads(match.group(0))
+
+
+def _review_cos_intake_route(state: SquadState, default_target: str, reasons: list[str]) -> tuple[str, str, str]:
+    if not reasons:
+        return default_target, "deterministic", "Gate barato: nenhum sinal exigiu revisao LLM."
+    document = state.get("reference_document") or {}
+    policy = state.get("execution_policy", {})
+    prompt = (
+        "[[AGENT:COS_INTAKE]]\n\n"
+        "Voce e o CoS Intake Gate. Revise a rota inicial de uma demanda antes de acionar especialistas.\n"
+        "Responda somente JSON valido, sem markdown, neste formato:\n"
+        '{"target":"discovery|product|engineering|engineering_review|writing","rationale":"motivo curto","confidence":"C1|C2|C3"}\n\n'
+        f"Objetivo: {state['user_goal']}\n"
+        f"Fluxo classificado: {state.get('active_flow', '')}\n"
+        f"Target inicial deterministico: {default_target}\n"
+        f"Motivos para revisar: {', '.join(reasons)}\n"
+        f"Tier: {policy.get('execution_tier', '')}; max_cost_usd: {policy.get('max_cost_usd', '')}\n"
+        f"Documento de referencia: {document.get('document_ref', 'nenhum')}\n"
+        f"Agentes sob demanda sinalizados: {', '.join(state.get('on_demand_agents', [])) or 'nenhum'}\n\n"
+        "Escolha o primeiro agente operacional mais adequado. Use engineering para bugs/correcoes, "
+        "engineering_review para review/auditoria, discovery para pesquisa/hipoteses, writing para docs puras, "
+        "product para produto/escopo/entrega funcional."
+    )
+    try:
+        payload = _extract_json_object(_resolve_model("cos_intake").invoke(prompt).content)
+    except Exception as error:
+        return default_target, "llm_fallback", f"CoS Intake LLM falhou; rota deterministica mantida. Erro: {str(error)[:180]}"
+    target = str(payload.get("target", default_target)).strip()
+    if target not in INITIAL_TARGETS:
+        return default_target, "llm_fallback", f"CoS Intake sugeriu target invalido `{target}`; rota deterministica mantida."
+    rationale = str(payload.get("rationale", "")).strip() or "CoS Intake revisou a rota inicial."
+    return target, "llm_review", rationale[:500]
+
+
+def cos_intake_node(state: SquadState):
+    if state.get("active_flow") == "ideation":
+        target = "cos"
+        gate_mode = "deterministic"
+        gate_rationale = "Fluxo ideation: Vision Agent processou a visao; CoS decide proximo passo."
+    else:
+        default_target = route_after_intake(state)
+        reasons = _cos_intake_llm_reasons(state, default_target)
+        target, gate_mode, gate_rationale = _review_cos_intake_route(state, default_target, reasons)
+    policy = state.get("execution_policy", {})
+    fixed = ", ".join(state.get("fixed_agents", [])) or "nenhum"
+    on_demand = ", ".join(state.get("on_demand_agents", [])) or "nenhum"
+    document = state.get("reference_document") or {}
+    document_line = (
+        f"Documento primario: {document.get('document_ref')} ({document.get('document_format', '')})."
+        if document.get("document_ref")
+        else "Documento primario: nenhum selecionado."
+    )
+    vision_section = ""
+    if state.get("vision_output"):
+        vision_section = f"\n\n## Mapa de Visao\n\n{state['vision_output'][:2000]}\n"
+    brief = (
+        "# CoS Intake Brief\n\n"
+        f"Objetivo: {state['user_goal']}\n\n"
+        f"Fluxo selecionado: {state.get('active_flow', 'delivery_core')}.\n"
+        f"Primeiro agente operacional: {_agent_display_name(target)}.\n"
+        f"Modo do gate: {gate_mode}. Racional: {gate_rationale}\n"
+        f"Tier/custo: {policy.get('execution_tier', 'unclassified')} "
+        f"ate US$ {policy.get('max_cost_usd', 'n/a')}.\n"
+        f"Agentes fixos: {fixed}.\n"
+        f"Agentes sob demanda: {on_demand}.\n"
+        f"{document_line}"
+        f"{vision_section}\n"
+        "Diretriz do CoS: manter escopo, ECE e bloqueios visiveis; C3 nao pode virar "
+        "execucao sem retorno ao CoS ou decisao humana."
+    )
+    append_handoff(
+        run_id=state.get("run_id", ""),
+        memory_namespace=state.get("memory_namespace", ""),
+        db_path=state.get("operational_db_path") or None,
+        from_agent="CoS / Intake Gate",
+        to_agent=_agent_display_name(target),
+        artifact="Operational Brief",
+        summary=brief[:500],
+        ece="C2" if gate_mode == "llm_review" else "C1",
+        blockers=(
+            f"Gate LLM condicional acionado por: {', '.join(reasons)}."
+            if gate_mode == "llm_review"
+            else "Nenhum bloqueio de entrada identificado pelo gate."
+        ),
+        next_step=f"{_agent_display_name(target)} deve iniciar o fluxo com base no brief operacional.",
+        escalate_to_cos="Nao. CoS ja enquadrou a entrada; retorna se houver C3, conflito ou bloqueio.",
+    )
+    return {
+        "cos_intake_output": brief,
+        "cos_intake_target": target,
+        "cos_intake_mode": gate_mode,
+        "cos_intake_rationale": gate_rationale,
+        "summaries_by_agent": {
+            **state.get("summaries_by_agent", {}),
+            "cos_intake": brief[:300],
+        },
+    }
+
+
+def route_after_cos_intake(state: SquadState) -> str:
+    return state.get("cos_intake_target") or route_after_intake(state)
+
 
 def discovery_node(state: SquadState):
     prompt = read_prompt("discovery.txt")
@@ -395,7 +759,7 @@ def ux_ui_node(state: SquadState):
     response = invoke_validated("ux_ui",
         f"[[AGENT:UX_UI]]\n\n"
         f"{prompt}\n\n"
-        f"{cmo_block(state, 'ux_ui', 'Revisar experiencia e estados da entrega.', delivery_context, 'Gate UX/UI com criterios verificaveis, ECE e resumo.')}\n\n"
+        f"{cmo_block(state, 'ux_ui', 'Revisar experiencia visual ou conversacional e estados da entrega.', delivery_context, 'Gate UX/UI & Conversation com criterios verificaveis, ECE e resumo.')}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
         f"{workspace_context_block(state, 'ux_ui')}"
         f"Contexto da entrega:\n{delivery_context}"
@@ -414,9 +778,9 @@ def ux_ui_node(state: SquadState):
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
         db_path=state.get("operational_db_path") or None,
-        from_agent="UX/UI Lead",
+        from_agent="UX/UI & Conversation Lead",
         to_agent=handoff_to,
-        artifact="UX/UI Gate",
+        artifact="UX/UI & Conversation Gate",
         summary=response.content[:500],
         ece="C1/C2",
         blockers="Bloqueios de experiencia devem ser incorporados aos criterios de aceite.",
@@ -512,7 +876,7 @@ def product_node(state: SquadState):
         "product",
         "Transformar Discovery em escopo funcional testavel.",
         discovery,
-        "Product Brief com MVP Sujo, EME, ECE e Resumo Estruturado.",
+        "Product Brief com escopo funcional, requisitos, ECE e Resumo Estruturado.",
     )
 
     response = invoke_validated("product",
@@ -534,7 +898,7 @@ def product_node(state: SquadState):
         artifact="Product Brief",
         summary=response.content[:500],
         ece="C2",
-        blockers="Engineering completa bloqueada se houver dependências C3 críticas.",
+        blockers="Engineering bloqueada se houver dependências C3 críticas não resolvidas.",
         next_step="QA Planning deve avaliar testabilidade e definir Go/No-Go.",
         escalate_to_cos="Não."
     )
@@ -642,7 +1006,7 @@ def engineering_node(state: SquadState):
         artifact="Engineering Specification",
         summary=response.content[:500],
         ece="C1/C2",
-        blockers="Nenhum bloqueio para MVP Sujo quando o escopo técnico estiver restrito.",
+        blockers="Sem bloqueios identificados neste ciclo.",
         next_step="Implementation Operator deve gerar pacote operacional para Claude Code.",
         escalate_to_cos="Não."
     )
@@ -689,6 +1053,53 @@ def operator_node(state: SquadState):
         f"AppSec Gate:\n{appsec}"
     )
 
+    # Try executor if artifact is execution_ready and workspace_root is available
+    execution_result_dict: dict | None = None
+    executor_used = ""
+    task_spec_dict: dict | None = None
+    workspace_root = state.get("workspace_root", "")
+    artifact = response.envelope.operational_artifact
+
+    if artifact.execution_ready and workspace_root:
+        task_spec_dict = _build_task_spec_dict(artifact, state)
+        try:
+            exec_result, executor_used = invoke_executor(
+                task_spec_dict,
+                workspace_root,
+                state.get("execution_policy", {}),
+                run_id=run_id,
+                db_path=state.get("operational_db_path") or DEFAULT_DB_PATH,
+            )
+            execution_result_dict = {
+                "success": exec_result.success,
+                "files_changed": exec_result.files_changed,
+                "output": exec_result.output,
+                "errors": exec_result.errors,
+                "exit_code": exec_result.exit_code,
+                "tokens_used": exec_result.tokens_used,
+                "iterations": exec_result.iterations,
+                "partial": exec_result.partial,
+            }
+        except Exception as exc:
+            execution_result_dict = {"success": False, "errors": str(exc), "partial": True,
+                                     "files_changed": [], "output": "", "exit_code": -1,
+                                     "tokens_used": None, "iterations": None}
+
+    # Enrich operator_output with executor evidence when available
+    enriched_output = response.content
+    if execution_result_dict is not None:
+        exec_label = executor_used or "n/a"
+        status_str = "success" if execution_result_dict.get("success") else "failed"
+        files_str = ", ".join(execution_result_dict.get("files_changed") or []) or "(none)"
+        out_str = (execution_result_dict.get("output") or "")[:300]
+        enriched_output = (
+            f"{response.content}\n\n"
+            f"## Executor Result ({exec_label})\n"
+            f"Status: {status_str}\n"
+            f"Files changed: {files_str}\n"
+            f"Output: {out_str}\n"
+        )
+
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
@@ -696,22 +1107,25 @@ def operator_node(state: SquadState):
         from_agent="Implementation Operator",
         to_agent="Engineering Review",
         artifact="Implementation Package",
-        summary=response.content[:500],
+        summary=enriched_output[:500],
         ece="C2",
-        blockers="Nenhum bloqueio para MVP Sujo quando o escopo técnico estiver restrito.",
+        blockers="Sem bloqueios identificados neste ciclo.",
         next_step="Engineering Lead deve revisar aderencia antes do QA Execution.",
         escalate_to_cos="Não."
     )
 
     return with_orchestrator_check(state, "operator", response, {
-        "operator_output": response.content,
+        "operator_output": enriched_output,
+        "task_spec": task_spec_dict,
+        "execution_result": execution_result_dict,
+        "executor_used": executor_used,
         "confidence_by_agent": {
             **state.get("confidence_by_agent", {}),
             "operator": "C2"
         },
         "summaries_by_agent": {
             **state.get("summaries_by_agent", {}),
-            "operator": response.content[:300]
+            "operator": enriched_output[:300]
         }
     })
 
@@ -737,12 +1151,14 @@ def engineering_review_node(state: SquadState):
         "Engineering Review com parecer, riscos, ECE e resumo.",
     )
 
+    exec_context = _execution_result_context(state)
     response = invoke_validated("engineering_review",
         f"[[AGENT:ENGINEERING_REVIEW]]\n\n"
         f"{prompt}\n\n"
         f"{cmo}\n\n"
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
         f"{workspace_context_block(state, 'engineering_review')}"
+        f"{exec_context}"
         f"Product Brief:\n{product}\n\n"
         f"QA Planning:\n{qa_plan}\n\n"
         f"Engineering Specification:\n{engineering}\n\n"
@@ -769,7 +1185,7 @@ def engineering_review_node(state: SquadState):
         "engineering_review_output": response.content,
         "confidence_by_agent": {
             **state.get("confidence_by_agent", {}),
-            "engineering_review": "C2"
+            "engineering_review": response.envelope.summary.ece
         },
         "summaries_by_agent": {
             **state.get("summaries_by_agent", {}),
@@ -797,6 +1213,7 @@ def qa_execution_node(state: SquadState):
         "Relatorio QA com EME, bugs, go/no-go, ECE e resumo.",
     )
 
+    exec_context = _execution_result_context(state)
     response = invoke_validated("qa_execution",
         f"[[AGENT:QA_EXECUTION]]\n\n"
         f"{prompt}\n\n"
@@ -804,6 +1221,7 @@ def qa_execution_node(state: SquadState):
         f"Objetivo do projeto:\n{state['user_goal']}\n\n"
         f"{workspace_context_block(state, 'qa_execution')}"
         f"{agent_context}"
+        f"{exec_context}"
         f"QA Planning:\n{qa_plan}\n\n"
         f"Engineering Specification:\n{engineering}\n\n"
         f"Implementation Operator Package:\n{operator}\n\n"
@@ -813,6 +1231,7 @@ def qa_execution_node(state: SquadState):
         f"Resultado da validação manual:\n{validation}"
     )
 
+    qa_ece = response.envelope.summary.ece
     append_handoff(
         run_id=run_id,
         memory_namespace=state.get("memory_namespace", ""),
@@ -821,8 +1240,8 @@ def qa_execution_node(state: SquadState):
         to_agent="CoS / Orchestrator",
         artifact="QA Execution Report",
         summary=response.content[:500],
-        ece="C1",
-        blockers="B-001 e B-002 podem permanecer abertos dependendo do ciclo.",
+        ece=qa_ece,
+        blockers="Bloqueios abertos dependem da avaliação final do CoS neste ciclo.",
         next_step="CoS deve avaliar coerência do ciclo, bloqueios e decisão de roteamento.",
         escalate_to_cos="Sim. Avaliação final do ciclo é responsabilidade do CoS."
     )
@@ -831,7 +1250,7 @@ def qa_execution_node(state: SquadState):
         "qa_exec_output": response.content,
         "confidence_by_agent": {
             **state.get("confidence_by_agent", {}),
-            "qa_execution": "C1"
+            "qa_execution": qa_ece
         },
         "summaries_by_agent": {
             **state.get("summaries_by_agent", {}),
@@ -1008,8 +1427,8 @@ def cos_node(state: SquadState):
         if decision == "GO_WITH_RESTRICTIONS":
             handoff_to = "Product Lead / Human Checkpoint"
             handoff_blockers = (
-                "B-001 permanece ativo: Engineering completa não aprovada. "
-                "B-002 permanece ativo: critérios do experimento precisam ser definidos."
+                "Engineering completa não aprovada. "
+                "Critérios do experimento precisam ser definidos antes da execução."
             )
             handoff_next_step = (
                 "Product Lead deve definir número de usuários, duração, "
@@ -1173,6 +1592,8 @@ def route_after_engineering_review(state: SquadState) -> str:
         if "appsec" in state.get("on_demand_agents", []):
             return next_after_check(state, "engineering_review", "appsec")
         return "cos"
+    # qa_execution is always mandatory for delivery/bugfix flows — it assesses
+    # artifacts autonomously even when manual_validation_result is empty.
     return next_after_check(state, "engineering_review", "qa_execution")
 
 
@@ -1182,9 +1603,13 @@ def route_after_cos(state: SquadState) -> str:
     return END
 
 
+from app.vision_node import vision_node  # noqa: E402 — after graph helpers are defined
+
 builder = StateGraph(SquadState)
 
 builder.add_node("intake", intake_node)
+builder.add_node("vision", vision_node)
+builder.add_node("cos_intake", cos_intake_node)
 builder.add_node("discovery", discovery_node)
 builder.add_node("writing", writing_node)
 builder.add_node("ux_ui", ux_ui_node)
@@ -1199,10 +1624,12 @@ builder.add_node("qa_execution", qa_execution_node)
 builder.add_node("cos", cos_node)
 
 builder.add_edge(START, "intake")
+builder.add_conditional_edges("intake", _route_after_intake_node, ["vision", "cos_intake"])
+builder.add_edge("vision", "cos_intake")
 builder.add_conditional_edges(
-    "intake",
-    route_after_intake,
-    ["discovery", "product", "engineering", "engineering_review", "writing"]
+    "cos_intake",
+    route_after_cos_intake,
+    ["discovery", "product", "engineering", "engineering_review", "writing", "cos"]
 )
 
 builder.add_conditional_edges(
