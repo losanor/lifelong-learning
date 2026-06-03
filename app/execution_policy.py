@@ -6,6 +6,7 @@ from typing import Iterable
 
 
 FLOW_TIER = {
+    "ideation": "quick",
     "docs": "quick",
     "review": "quick",
     "decision_only": "quick",
